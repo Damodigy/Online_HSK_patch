@@ -1241,7 +1241,7 @@ namespace RimWorldOnlineCity
                 else if (isNotData)
                 {
                     command_Action.defaultDesc = "OC_DataNotAvailable".Translate(); //Данные не доступны 
-                    command_Action.disabled = true;
+                    command_Action.Disabled = true;
                 }
                 else if (isNotCheck)
                 {

@@ -23,6 +23,12 @@ namespace OCUnion.Transfer.Model
         /// Файлы которые находятся в этих директориях
         /// </summary>
         public List<ModelFileInfo> Files { get; set; }
+
+        /// <summary>
+        /// Смещения уже скачанных частей по файлам (ключ в lowercase).
+        /// Используется сервером для возобновления чанковой загрузки.
+        /// </summary>
+        public Dictionary<string, long> ResumeFrom { get; set; }
     }
 
     [Serializable]

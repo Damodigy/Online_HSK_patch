@@ -23,6 +23,18 @@ namespace OCUnion.Transfer.Model
         /// </summary>
         public bool NeedReplace { get; set; }
 
+        /// <summary>
+        /// Смещение чанка внутри файла. Используется для дозагрузки больших файлов.
+        /// 0 для полного файла или первого чанка.
+        /// </summary>
+        public long ChunkOffset { get; set; }
+
+        /// <summary>
+        /// Полный размер файла при чанковой передаче.
+        /// 0 если пришёл файл целиком.
+        /// </summary>
+        public long ChunkTotalSize { get; set; }
+
         public override int GetHashCode()
         {
             if (Hash == null || Hash.Length < 8)

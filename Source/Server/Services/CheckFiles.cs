@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using OCUnion;
@@ -16,7 +17,13 @@ namespace ServerOnlineCity.Services
 
         public int ResponseTypePackage => (int)PackageType.Response36ListFiles;
 
-        private const long MaxPacketSize = 5000000;
+        private static long GetMaxPacketSize()
+        {
+            var maxPacketSizeMb = ServerManager.ServerSettings?.MaxFileSyncPacketSizeMb ?? 5;
+            if (maxPacketSizeMb < 1) maxPacketSizeMb = 1;
+            if (maxPacketSizeMb > 256) maxPacketSizeMb = 256;
+            return maxPacketSizeMb * 1024L * 1024L;
+        }
 
         public ModelContainer GenerateModelContainer(ModelContainer request, ServiceContext context)
         {
@@ -46,8 +53,11 @@ namespace ServerOnlineCity.Services
 
             if (packet.CodeRequest % 1000 == 0)
             {
+                var maxPacketSize = GetMaxPacketSize();
                 var allServerFiles = new HashSet<string>(checkedDirAndFile.HashFiles.Keys);
-                var packetFiles = packet.Files != null ? packet.Files : new List<ModelFileInfo>(0);
+                var packetFiles = packet.Files ?? new List<ModelFileInfo>(0);
+                var resumeFrom = packet.ResumeFrom;
+                var canReplace = checkedDirAndFile.Settings.NeedReplace;
                 long packetSize = 0;
                 long totalSize = 0;
 
@@ -62,40 +72,37 @@ namespace ServerOnlineCity.Services
 
                     if (checkedDirAndFile.HashFiles.TryGetValue(modelFileFileName, out ModelFileInfo fileInfo))
                     {
-                        allServerFiles.Remove(modelFileFileName); // 
+                        allServerFiles.Remove(modelFileFileName);
 
                         if (!ModelFileInfo.UnsafeByteArraysEquale(modelFile.Hash, fileInfo.Hash))
                         {
-                            // read file for send to Client      
-                            // файл  найден, но хеши не совпадают, необходимо заменить файл
-                            if (packetSize < MaxPacketSize)
-                            {
-                                var addFile = GetFile(checkedDirAndFile.Settings.ServerPath, fileInfo.FileName, checkedDirAndFile.Settings.NeedReplace);
-                                result.Add(addFile);
-                                packetSize += addFile.Size;
-                                totalSize += addFile.Size;
-                                //Loger.Log($"packetSize={packetSize} totalSize={totalSize}");
-                            }
-                            else
-                            {
-                                var size = GetFileSize(checkedDirAndFile.Settings.ServerPath, fileInfo.FileName);
-                                totalSize += size;
-                            }
+                            AddOrCountFile(
+                                checkedDirAndFile.Settings.ServerPath,
+                                fileInfo.FileName,
+                                modelFileFileName,
+                                resumeFrom,
+                                canReplace,
+                                maxPacketSize,
+                                ref packetSize,
+                                ref totalSize,
+                                result);
                         }
                     }
                     else
                     {
-                        // mark file for delete 
+                        // mark file for delete
                         // Если файл с таким именем не найден, помечаем файл на удаление
                         modelFile.Hash = null;
                         modelFile.NeedReplace = checkedDirAndFile.Settings.NeedReplace;
+                        modelFile.ChunkOffset = 0;
+                        modelFile.ChunkTotalSize = 0;
                         result.Add(modelFile);
                     }
                 }
 
                 lock (context.Player)
                 {
-                    // проверяем в обратном порядке: что бы у клиенты были все файлы
+                    // проверяем в обратном порядке: что бы у клиента были все файлы
                     if (allServerFiles.Any())
                     {
                         foreach (var fileName in allServerFiles)
@@ -108,21 +115,16 @@ namespace ServerOnlineCity.Services
 
                             context.Player.ApproveLoadWorldReason = false;
 
-                            if (packetSize < MaxPacketSize)
-                            {
-                                var addFile = GetFile(checkedDirAndFile.Settings.ServerPath
-                                    , checkedDirAndFile.HashFiles[fileName].FileName
-                                    , checkedDirAndFile.Settings.NeedReplace); //workDict[fileName].FileName вместо fileName для восстановления заглавных
-                                result.Add(addFile);
-                                packetSize += addFile.Size;
-                                totalSize += addFile.Size;
-                                //Loger.Log($"packetSize={packetSize} totalSize={totalSize}");
-                            }
-                            else
-                            {
-                                var size = GetFileSize(checkedDirAndFile.Settings.ServerPath, checkedDirAndFile.HashFiles[fileName].FileName);
-                                totalSize += size;
-                            }
+                            AddOrCountFile(
+                                checkedDirAndFile.Settings.ServerPath,
+                                checkedDirAndFile.HashFiles[fileName].FileName,
+                                fileName,
+                                resumeFrom,
+                                canReplace,
+                                maxPacketSize,
+                                ref packetSize,
+                                ref totalSize,
+                                result);
                         }
                     }
 
@@ -138,7 +140,7 @@ namespace ServerOnlineCity.Services
                     Folder = checkedDirAndFile.Settings,
                     Files = result,
                     // микроптимизация: если файлы не будут восстанавливаться, не отправляем обратно список папок
-                    // на восстановление ( десериализацию папок также тратится время)
+                    // на восстановление (десериализацию папок также тратится время)
                     FoldersTree = result.Any() ? checkedDirAndFile.FolderTree : new FoldersTree(),
                     TotalSize = totalSize,
                 };
@@ -160,14 +162,155 @@ namespace ServerOnlineCity.Services
             }
         }
 
-        private ModelFileInfo GetFile(string rootDir, string fileName, bool needReplace)
+        private void AddOrCountFile(
+            string rootDir,
+            string fileName,
+            string fileNameLower,
+            Dictionary<string, long> resumeFrom,
+            bool needReplace,
+            long maxPacketSize,
+            ref long packetSize,
+            ref long totalSize,
+            List<ModelFileInfo> result)
+        {
+            var size = GetFileSize(rootDir, fileName);
+
+            if (needReplace)
+            {
+                // Пустой файл тоже должен быть отправлен хотя бы как пустой payload,
+                // иначе клиент никогда не создаст/не обнулит его.
+                if (size == 0)
+                {
+                    result.Add(GetFile(rootDir, fileName, true, 0, 0));
+                    return;
+                }
+
+                var resumeOffset = GetResumeOffset(resumeFrom, fileNameLower, size);
+                var remaining = size - resumeOffset;
+                if (remaining <= 0)
+                {
+                    resumeOffset = 0;
+                    remaining = size;
+                }
+
+                totalSize += remaining;
+
+                var freeInPacket = maxPacketSize - packetSize;
+                if (freeInPacket <= 0) return;
+
+                var chunkSize = Math.Min(remaining, freeInPacket);
+                if (chunkSize <= 0) return;
+
+                var addFile = GetFile(rootDir, fileName, true, resumeOffset, chunkSize);
+                result.Add(addFile);
+                packetSize += addFile.Size;
+                return;
+            }
+
+            var canAddNow = packetSize == 0 || packetSize + size <= maxPacketSize;
+            if (canAddNow)
+            {
+                var addFile = GetFile(rootDir, fileName, false);
+                result.Add(addFile);
+                packetSize += addFile.Size;
+                totalSize += addFile.Size;
+                //Loger.Log($"packetSize={packetSize} totalSize={totalSize}");
+            }
+            else
+            {
+                totalSize += size;
+            }
+        }
+
+        private static long GetResumeOffset(Dictionary<string, long> resumeFrom, string fileNameLower, long fileSize)
+        {
+            if (resumeFrom == null)
+            {
+                return 0;
+            }
+
+            if (!resumeFrom.TryGetValue(fileNameLower, out var offset))
+            {
+                // Клиент/сервер могут по-разному нормализовать разделители путей.
+                var altFileName = fileNameLower.Contains("\\")
+                    ? fileNameLower.Replace('\\', '/')
+                    : fileNameLower.Replace('/', '\\');
+                if (!resumeFrom.TryGetValue(altFileName, out offset))
+                {
+                    return 0;
+                }
+            }
+
+            if (offset <= 0 || offset >= fileSize)
+            {
+                return 0;
+            }
+
+            return offset;
+        }
+
+        private ModelFileInfo GetFile(string rootDir, string fileName, bool needReplace, long chunkOffset = 0, long chunkSize = long.MaxValue)
         {
             var newFile = new ModelFileInfo() { FileName = fileName, NeedReplace = needReplace };
             if (needReplace)
             {
                 var fullname = Path.Combine(rootDir, fileName);
-                newFile.Hash = File.ReadAllBytes(fullname);
-                newFile.Size = newFile.Hash.Length;
+                var totalSize = new FileInfo(fullname).Length;
+                if (chunkOffset < 0 || chunkOffset >= totalSize)
+                {
+                    chunkOffset = 0;
+                }
+
+                var lengthToRead = totalSize - chunkOffset;
+                if (chunkSize >= 0 && chunkSize < lengthToRead)
+                {
+                    lengthToRead = chunkSize;
+                }
+
+                if (lengthToRead < 0)
+                {
+                    lengthToRead = 0;
+                }
+
+                if (lengthToRead > int.MaxValue)
+                {
+                    lengthToRead = int.MaxValue;
+                }
+
+                if (lengthToRead == 0)
+                {
+                    newFile.Hash = new byte[0];
+                    newFile.Size = 0;
+                }
+                else
+                {
+                    using (var stream = File.OpenRead(fullname))
+                    {
+                        stream.Position = chunkOffset;
+                        var bytes = new byte[(int)lengthToRead];
+                        var readTotal = 0;
+                        while (readTotal < bytes.Length)
+                        {
+                            var readNow = stream.Read(bytes, readTotal, bytes.Length - readTotal);
+                            if (readNow <= 0) break;
+                            readTotal += readNow;
+                        }
+
+                        if (readTotal != bytes.Length)
+                        {
+                            Array.Resize(ref bytes, readTotal);
+                        }
+
+                        newFile.Hash = bytes;
+                        newFile.Size = readTotal;
+                    }
+                }
+
+                if (chunkOffset > 0 || newFile.Size < totalSize)
+                {
+                    newFile.ChunkOffset = chunkOffset;
+                    newFile.ChunkTotalSize = totalSize;
+                }
             }
             else
             {

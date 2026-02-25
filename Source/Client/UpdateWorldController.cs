@@ -113,33 +113,26 @@ namespace RimWorldOnlineCity
 
             toServ.LastTick = (long)Find.TickManager.TicksGame;
 
-            //var allWorldObjectsArr = new WorldObject[Find.WorldObjects.AllWorldObjects.Count];
-            //Find.WorldObjects.AllWorldObjects.CopyTo(allWorldObjectsArr);
+            List<Faction> factionList = Find.FactionManager.AllFactionsListForReading
+                .Where(f => !f.IsPlayer)
+                .ToList();
 
-            //List<WorldObject> allWorldObjects = allWorldObjectsArr.Where(wo => wo != null).ToList();
-            List<Faction> factionList = Find.FactionManager.AllFactionsListForReading;
-
-            if (SessionClientController.Data.GeneralSettings.EquableWorldObjects)
+            // First sync is always used to reconcile non-player factions/settlements with server canonical world.
+            if (firstRun)
             {
-                #region Send to Server: firstRun EquableWorldObjects
                 try
                 {
-                    // Game on init
-                    if (firstRun && modelGameServerInfo != null)
-                    {
-                        if (modelGameServerInfo.WObjectOnlineList.Count > 0)
-                        {
-                            toServ.WObjectOnlineList = allWorldObjects.Where(wo => wo is Settlement)
-                                                                 .Where(wo => wo.HasName && !wo.Faction.IsPlayer).Select(obj => GetWorldObjects(obj)).ToList();
-                        }
-
-                        if(modelGameServerInfo.FactionOnlineList.Count > 0)
-                        {
-                            List <Faction> factions = Find.FactionManager.AllFactionsListForReading;
-                            toServ.FactionOnlineList = factions.Select(obj => GetFactions(obj)).ToList();
-                        }
-                        return;
-                    }
+                    var worldObjectsForSync = allWorldObjects ?? GameUtils.GetAllWorldObjects();
+                    var onlineWObjArr = worldObjectsForSync.Where(wo => wo is Settlement)
+                        .Where(wo => wo.HasName && !(wo.Faction?.IsPlayer ?? false))
+                        .ToList();
+                    toServ.WObjectOnlineList = onlineWObjArr
+                        .Select(GetWorldObjects)
+                        .ToList();
+                    toServ.FactionOnlineList = factionList
+                        .Select(GetFactions)
+                        .ToList();
+                    return;
                 }
                 catch (Exception e)
                 {
@@ -147,21 +140,17 @@ namespace RimWorldOnlineCity
                     Log.Error("SendToServer FirstRun error");
                     return;
                 }
-                #endregion
             }
 
+            toServ.IsWorldObjectsSync = !firstRun;
             if (!firstRun)
             {
                 //Loger.Log("Client TestBagSD 035");
-                //отправка всех новых и измененных объектов игрока
-                toServ.WObjects = WObjects;
-                //Dictionary<Map, List<Pawn>> cacheColonists = new Dictionary<Map, List<Pawn>>();
-                //toServ.WObjects = allWorldObjects
-                //    .Where(o => (o.Faction?.IsPlayer ?? false) //o.Faction != null && o.Faction.IsPlayer
-                //        && (o is Settlement || o is Caravan)) //Чтобы отсеч разные карты событий
-                //    .Select(o => GetWorldObjectEntry(o, gameProgress, cacheColonists))
-                //    .ToList();
-                LastSendMyWorldObjects = toServ.WObjects;
+                //Отправляем только дельту собственных world-объектов.
+                var currentMyWorldObjects = WObjects ?? new List<WorldObjectEntry>();
+                toServ.WObjects = BuildMyWorldObjectsDelta(currentMyWorldObjects, LastSendMyWorldObjects);
+                //Для UI и клиентского состояния храним полный последний снэпшот, а не дельту.
+                LastSendMyWorldObjects = currentMyWorldObjects;
 
                 //Loger.Log("Client TestBagSD 036");
                 //свои объекты которые удалил пользователь с последнего обновления
@@ -235,9 +224,70 @@ namespace RimWorldOnlineCity
             }
         }
 
+        private static List<WorldObjectEntry> BuildMyWorldObjectsDelta(List<WorldObjectEntry> current, List<WorldObjectEntry> previous)
+        {
+            if (current == null || current.Count == 0) return new List<WorldObjectEntry>();
+            if (previous == null || previous.Count == 0) return current;
+
+            var prevByServerId = previous
+                .Where(wo => wo != null && wo.PlaceServerId > 0)
+                .GroupBy(wo => wo.PlaceServerId)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            var result = new List<WorldObjectEntry>(current.Count);
+            for (int i = 0; i < current.Count; i++)
+            {
+                var cur = current[i];
+                if (cur == null)
+                {
+                    continue;
+                }
+
+                //Новые объекты без serverId отправляем всегда до получения id от сервера.
+                if (cur.PlaceServerId <= 0)
+                {
+                    result.Add(cur);
+                    continue;
+                }
+
+                if (!prevByServerId.TryGetValue(cur.PlaceServerId, out var prev)
+                    || !EqualsWorldObjectEntry(cur, prev))
+                {
+                    result.Add(cur);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool EqualsWorldObjectEntry(WorldObjectEntry a, WorldObjectEntry b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null) return false;
+
+            return a.Type == b.Type
+                && a.Tile == b.Tile
+                && string.Equals(a.Name, b.Name)
+                && a.PlaceServerId == b.PlaceServerId
+                && a.FreeWeight == b.FreeWeight
+                && a.MarketValue == b.MarketValue
+                && a.MarketValuePawn == b.MarketValuePawn
+                && a.MarketValueStorage == b.MarketValueStorage
+                && a.MarketValueBalance == b.MarketValueBalance
+                && string.Equals(a.LoginOwner, b.LoginOwner);
+        }
+
         public static void LoadFromServer(ModelPlayToClient fromServ, bool removeMissing)
         {
-            if (SessionClientController.Data.GeneralSettings.EquableWorldObjects)
+            var hasWorldSyncPayload =
+                (fromServ.WObjectOnlineList?.Count ?? 0) > 0
+                || (fromServ.WObjectOnlineToAdd?.Count ?? 0) > 0
+                || (fromServ.WObjectOnlineToDelete?.Count ?? 0) > 0
+                || (fromServ.FactionOnlineList?.Count ?? 0) > 0
+                || (fromServ.FactionOnlineToAdd?.Count ?? 0) > 0
+                || (fromServ.FactionOnlineToDelete?.Count ?? 0) > 0;
+
+            if (SessionClientController.Data.GeneralSettings.EquableWorldObjects || hasWorldSyncPayload)
             {
                 ApplyFactionsToWorld(fromServ);
                 // ---------------------------------------------------------------------------------- // 
@@ -623,8 +673,7 @@ namespace RimWorldOnlineCity
                     CacheMap ps;
                     if (!cacheColonists.TryGetValue(map, out ps))
                     {
-                        var mapPawnsA = new Pawn[map.mapPawns.AllPawnsSpawned.Count];
-                        map.mapPawns.AllPawnsSpawned.CopyTo(mapPawnsA);
+                        var mapPawnsA = map.mapPawns.AllPawnsSpawned.ToArray();
 
                         ps = new CacheMap();
                         ps.Colonists = mapPawnsA.Where(p => p.Faction == Faction.OfPlayer /*&& p.RaceProps.Humanlike*/).ToList();
@@ -962,6 +1011,7 @@ namespace RimWorldOnlineCity
             ConverterServerId = new Dictionary<long, int>();
             WorldObject_TradeOrdersOnline = new HashSet<TradeOrdersOnline>();
             ToDelete = null;
+            LastSendMyWorldObjects = null;
             LastCatchAllWorldObjectsByID = null;
         }
 
@@ -1050,13 +1100,17 @@ namespace RimWorldOnlineCity
         {
             try
             {
+                if (fromServ.FactionOnlineList != null && fromServ.FactionOnlineList.Count > 0)
+                {
+                    OCFactionManager.UpdateFactionIDS(fromServ.FactionOnlineList);
+                }
+
                 // ! WIP Factions
                 if (fromServ.FactionOnlineToDelete != null && fromServ.FactionOnlineToDelete.Count > 0)
                 {
                     var factionToDelete = Find.FactionManager.AllFactionsListForReading.Where(f => !f.IsPlayer)
                         .Where(obj => fromServ.FactionOnlineToDelete.Any(fs => ValidateFaction(fs, obj))).ToList();
 
-                    OCFactionManager.UpdateFactionIDS(fromServ.FactionOnlineList);
                     for (var i = 0; i < factionToDelete.Count; i++)
                     {
                         OCFactionManager.DeleteFaction(factionToDelete[i]);
@@ -1077,7 +1131,6 @@ namespace RimWorldOnlineCity
                             var existingFaction = Find.FactionManager.AllFactionsListForReading.Where(f => ValidateFaction(fromServ.FactionOnlineToAdd[i], f)).ToList();
                             if (existingFaction.Count == 0)
                             {
-                                OCFactionManager.UpdateFactionIDS(fromServ.FactionOnlineList);
                                 OCFactionManager.AddNewFaction(fromServ.FactionOnlineToAdd[i]);
                             }
                             else

@@ -43,6 +43,8 @@ namespace RimWorldOnlineCity.Services
             UpdateModsWindow.Title = "OC_Hash_Downloading".Translate();
             UpdateModsWindow.HashStatus = "";
             UpdateModsWindow.SummaryList = null;
+            UpdateModsWindow.ResetProgress();
+            UpdateModsWindow.SetProgress(0d, "0%");
 
             var clientFileChecker = (ClientFileChecker)context;
             var model = new ModelModsFilesRequest()
@@ -51,12 +53,14 @@ namespace RimWorldOnlineCity.Services
                 Files = clientFileChecker.FilesHash,
                 NumberFileRequest = 0
             };
+            var resumeFrom = LoadResumeOffsets(clientFileChecker.FolderPath);
             long totalSize = 0;
             long downloadSize = 0;
             try
             {
                 while (true)
                 {
+                    model.ResumeFrom = resumeFrom.Count == 0 ? null : new Dictionary<string, long>(resumeFrom);
                     Loger.Log($"Send hash {clientFileChecker.Folder.FolderType} N{model.NumberFileRequest}");
 
                     var res = _sessionClient.TransObject2<ModelModsFilesResponse>(model, RequestTypePackage, ResponseTypePackage);
@@ -98,13 +102,40 @@ namespace RimWorldOnlineCity.Services
                         if (totalSize == 0) totalSize = res.TotalSize;
                         downloadSize += res.Files.Sum(f => f.Size);
                         Loger.Log($"Files that need for a change: {downloadSize}/{totalSize} count={res.Files.Count}", Loger.LogLevel.WARNING);
-                        var pr = downloadSize > totalSize || totalSize == 0 ? 100 : downloadSize * 100 / totalSize;
-                        UpdateModsWindow.HashStatus = "OC_Hash_Downloading_Finish".Translate()
-                            + pr.ToString() + "%";
+                        string prText = "...";
+                        if (totalSize > 0)
+                        {
+                            var progressValue = (double)downloadSize / totalSize;
+                            if (progressValue < 0d) progressValue = 0d;
+                            if (progressValue > 1d) progressValue = 1d;
+                            var pr = (int)Math.Round(progressValue * 100d);
+                            prText = pr.ToString() + "%";
+                            UpdateModsWindow.SetProgress(progressValue, prText);
+                        }
+                        else
+                        {
+                            UpdateModsWindow.SetIndeterminateProgress(prText);
+                        }
+                        UpdateModsWindow.HashStatus = "OC_Hash_Downloading_Finish".Translate() + prText;
 
                         result = false;
-                        if (res.Files.Any(f => f.NeedReplace)) FileChecker.FileSynchronization(clientFileChecker.FolderPath, res);
-                        clientFileChecker.RecalculateHash(res.Files.Select(f => f.FileName).ToList());
+                        if (res.Files.Any(f => f.NeedReplace))
+                        {
+                            var completedFiles = FileChecker.FileSynchronization(clientFileChecker.FolderPath, res, resumeFrom);
+                            if (completedFiles.Count > 0)
+                            {
+                                clientFileChecker.RecalculateHash(completedFiles);
+                            }
+                        }
+                        else
+                        {
+                            // Файлы без замены (NeedReplace=false) перезаписывать не можем,
+                            // но для единообразия убираем любые stale-ключи резюма.
+                            foreach (var fileName in res.Files.Select(f => f.FileName.ToLower()))
+                            {
+                                resumeFrom.Remove(fileName);
+                            }
+                        }
 
                         Report.FileSynchronization(res.Files);
 
@@ -129,14 +160,57 @@ namespace RimWorldOnlineCity.Services
                         || res.Files.Any(f => !f.NeedReplace) //это файлы без права замены, а значит проблема не может быть решена
                         ) model.NumberFileRequest++;
                 }
+
+                if (result)
+                {
+                    UpdateModsWindow.ResetProgress();
+                }
+                else
+                {
+                    UpdateModsWindow.SetProgress(1d, "100%");
+                }
+
                 return result;
             }
             catch (Exception ex)
             {
+                UpdateModsWindow.ResetProgress();
                 Loger.Log(ex.ToString());
                 SessionClientController.Disconnected("Error " + ex.Message);
                 return false;
             }
+        }
+
+        private static Dictionary<string, long> LoadResumeOffsets(string folderPath)
+        {
+            var result = new Dictionary<string, long>();
+            try
+            {
+                if (!Directory.Exists(folderPath)) return result;
+
+                foreach (var partFile in Directory.GetFiles(folderPath, "*.ocpart", SearchOption.AllDirectories))
+                {
+                    var relative = partFile.Substring(folderPath.Length).TrimStart('\\', '/');
+                    if (relative.EndsWith(".ocpart", StringComparison.OrdinalIgnoreCase))
+                    {
+                        relative = relative.Substring(0, relative.Length - ".ocpart".Length);
+                    }
+                    if (string.IsNullOrWhiteSpace(relative)) continue;
+
+                    var key = relative.Replace('/', '\\').ToLower();
+                    var length = new FileInfo(partFile).Length;
+                    if (length > 0)
+                    {
+                        result[key] = length;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Loger.Log("LoadResumeOffsets error: " + ex);
+            }
+
+            return result;
         }
     }
 }

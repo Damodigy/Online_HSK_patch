@@ -145,8 +145,7 @@ namespace RimWorldOnlineCity
                 var map = Find.Maps[0];
 
                 //var pawnsMy = map.mapPawns.AllPawnsSpawned.First();
-                var mapPawnsA = new Pawn[map.mapPawns.AllPawnsSpawned.Count];
-                map.mapPawns.AllPawnsSpawned.CopyTo(mapPawnsA);
+                var mapPawnsA = map.mapPawns.AllPawnsSpawned.ToArray();
                 var pawnsMy = mapPawnsA.First();
 
                 Thing thinXZ;

@@ -172,6 +172,8 @@ namespace ServerOnlineCity.Model
             if (StatesRanking == null) StatesRanking = new List<string>();
             if (PlayersRankingLast == null) PlayersRankingLast = new List<string>();
             if (StatesRankingLast == null) StatesRankingLast = new List<string>();
+            if (WorldObjectOnlineList == null) WorldObjectOnlineList = new List<WorldObjectOnline>();
+            if (FactionOnlineList == null) FactionOnlineList = new List<FactionOnline>();
 
             // Преобразования при обновлениях {
 

@@ -17,7 +17,9 @@ namespace Transfer
         public DateTime LastSend;
         private long CurrentSendRequestLength = 0;
         private long CurrentReceiveRequestLength = 0;
+        private long CurrentReceiveRequestProgress = 0;
         public long CurrentRequestLength => CurrentSendRequestLength + CurrentReceiveRequestLength;
+        public long CurrentRequestProgressLength => CurrentSendRequestLength + CurrentReceiveRequestProgress;
         public DateTime CurrentRequestStart = DateTime.MinValue;
 
         public ConnectClient(string addr, int port)
@@ -45,6 +47,7 @@ namespace Transfer
 
             CurrentSendRequestLength = message.Length + packlength.Length;
             CurrentReceiveRequestLength = 0;
+            CurrentReceiveRequestProgress = 0;
             CurrentRequestStart = DateTime.UtcNow;
             try
             {
@@ -67,6 +70,7 @@ namespace Transfer
             int lenghtAllMessageByte;
 
             CurrentReceiveRequestLength = Int32Length;
+            CurrentReceiveRequestProgress = 0;
             CurrentRequestStart = DateTime.UtcNow;
             //оставляем кол-во байт к последней отправке, чтобы ждать не только приема этих 4, но и окончания отправки тех CurrentSendRequestLength
             if ((CurrentRequestStart - LastSend).TotalSeconds > 1d) CurrentSendRequestLength = 0;
@@ -74,14 +78,18 @@ namespace Transfer
             {
                 byte[] receiveBuffer;
                 if (prefix != null)
+                {
                     receiveBuffer = prefix;
+                    CurrentReceiveRequestProgress = prefix.Length;
+                }
                 else
                     receiveBuffer = ReceiveBytes(Int32Length);
                 lenghtAllMessageByte = BitConverter.ToInt32(receiveBuffer, 0);
                 if (lenghtAllMessageByte == 0) return new byte[0];
 
                 CurrentSendRequestLength = 0;
-                CurrentReceiveRequestLength = lenghtAllMessageByte;
+                CurrentReceiveRequestLength = Int32Length + lenghtAllMessageByte;
+                CurrentReceiveRequestProgress = Int32Length;
                 CurrentRequestStart = DateTime.UtcNow;
 
                 receiveBuffer = ReceiveBytes(lenghtAllMessageByte);
@@ -157,6 +165,7 @@ namespace Transfer
                     Buffer.BlockCopy(receiveBuffer, 0, msg, offset, numberOfBytesRead);
                     offset += numberOfBytesRead;
                     lenghtAllMessageByte -= numberOfBytesRead;
+                    CurrentReceiveRequestProgress += numberOfBytesRead;
                 }
             };
 

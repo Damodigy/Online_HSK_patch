@@ -189,6 +189,7 @@ Create a Settings.json file in the World folder (it can be opened with a simple 
   "Port": 19019,
   "Description": "Official server OnlineCity with modpack",
   "IsModsWhitelisted": true,
+  "MaxFileSyncPacketSizeMb": 20,
   "DisableDevMode": true,
   "MinutesIntervalBetweenPVP": 20,
   "GeneralSettings": {

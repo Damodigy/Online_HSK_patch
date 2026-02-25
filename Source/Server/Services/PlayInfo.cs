@@ -82,8 +82,9 @@ namespace ServerOnlineCity.Services
                 //передаем назад объекты у которых не было ServerId, т.е. они новые для сервера + все с изменениями
                 var outWO = new List<WorldObjectEntry>();
                 var outWOD = new List<WorldObjectEntry>();
-                //это первое обращение, если не прислали своих объектов
-                var first = pWOs.Count == 0;
+                //это первое обращение: initial sync идет без payload своих объектов.
+                //для delta-режима пустой список объектов не должен считаться first.
+                var first = !packet.IsWorldObjectsSync && pWOs.Count == 0;
                 lock (data)
                 {
                     for (int i = 0; i < pDs.Count; i++)
@@ -224,7 +225,8 @@ namespace ServerOnlineCity.Services
 
                     #region Non-Player World Objects
                     //World Object Online
-                    if (ServerManager.ServerSettings.GeneralSettings.EquableWorldObjects)
+                    var forceFirstRunSync = packet.UpdateTime <= DateTime.MinValue;
+                    if (ServerManager.ServerSettings.GeneralSettings.EquableWorldObjects || forceFirstRunSync)
                     {
                         //World Object Online
                         try

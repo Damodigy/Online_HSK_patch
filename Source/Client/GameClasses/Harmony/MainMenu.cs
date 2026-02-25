@@ -29,6 +29,7 @@ namespace RimWorldOnlineCity
             //if (!SessionClientController.ClientFileCheckersComplete)
             {
                 Loger.Log("Message wait UpdateModsWindow");
+                UpdateModsWindow.ResetProgress();
                 Find.WindowStack.Add(new UpdateModsWindow());
                 return; 
             }

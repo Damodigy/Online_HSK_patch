@@ -63,7 +63,7 @@
   -->
   <ItemGroup>
     <Reference Include="%24HugsLibChecker, Version=0.5.0.0, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>..\packages\UnlimitedHugs.Rimworld.HugsLibChecker.1.0.0\lib\net35\$HugsLibChecker.dll</HintPath>
+      <HintPath>..\packages\UnlimitedHugs.Rimworld.HugsLibChecker.5.0.0\lib\net35\$HugsLibChecker.dll</HintPath>
       <SpecificVersion>False</SpecificVersion>
       <Private>False</Private>
     </Reference>
@@ -151,6 +151,7 @@
     <Compile Include="GameClasses\MainTabTestButton.cs" />
     <Compile Include="GameClasses\Incident\OCIncidentFactory.cs" />
     <Compile Include="ExchengeUtils.cs" />
+    <Compile Include="Lib\RenderMap.cs" />
     <Compile Include="GameAttackHost.cs" />
     <Compile Include="GameClasses\BaseOnline.cs" />
     <Compile Include="GameClasses\CaravanArrivalAction_VisitOnline.cs" />
@@ -254,7 +255,7 @@
     <!--
     Copy Source files 
     -->
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\1.1\&quot;            &quot;$(RimWorldModFolder)\OnlineCity\1.1\&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\1.5\&quot;            &quot;$(RimWorldModFolder)\OnlineCity\1.5\&quot;" />
     <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\About\&quot;          &quot;$(RimWorldModFolder)\OnlineCity\About\&quot;" />
     <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\Documentation\&quot;  &quot;$(RimWorldModFolder)\OnlineCity\Documentation\&quot;" />
     <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\Languages\&quot;      &quot;$(RimWorldModFolder)\OnlineCity\Languages\&quot;" />
@@ -264,11 +265,11 @@
     Copy Comilled files 
     -->
     <Message Importance="high" Text="--Starting deploy compilled project files--" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\ISharpZipLib.dll&quot;            &quot;$(RimWorldModFolder)\OnlineCity\1.1\Assemblies&quot;" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\OCUnion.pdb&quot;                 &quot;$(RimWorldModFolder)\OnlineCity\1.1\Assemblies&quot;" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\OCUnion.dll&quot;                 &quot;$(RimWorldModFolder)\OnlineCity\1.1\Assemblies&quot;" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\RimWorldOnlineCity.dll&quot;      &quot;$(RimWorldModFolder)\OnlineCity\1.1\Assemblies&quot;" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\RimWorldOnlineCity.pdb&quot;      &quot;$(RimWorldModFolder)\OnlineCity\1.1\Assemblies&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\ISharpZipLib.dll&quot;            &quot;$(RimWorldModFolder)\OnlineCity\1.5\Assemblies&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\OCUnion.pdb&quot;                 &quot;$(RimWorldModFolder)\OnlineCity\1.5\Assemblies&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\OCUnion.dll&quot;                 &quot;$(RimWorldModFolder)\OnlineCity\1.5\Assemblies&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\RimWorldOnlineCity.dll&quot;      &quot;$(RimWorldModFolder)\OnlineCity\1.5\Assemblies&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Debug\RimWorldOnlineCity.pdb&quot;      &quot;$(RimWorldModFolder)\OnlineCity\1.5\Assemblies&quot;" />
     <Message Importance="high" Text="--Done deploy compilled project files--" />
     <Message Importance="high" Text="DONE!" />
   </Target>
@@ -282,7 +283,7 @@
   <Target Name="deploySourcesToBuild" Condition=" '$(Configuration)' == 'Release' " AfterTargets="Build">
     <Message Importance="high" Text="-----------Build release client complete-----------" />
     <Message Importance="high" Text="--Starting deploy sources project files--" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\1.1\&quot;            &quot;$(RimWorldModFolder)\OnlineCity\1.1\&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\1.5\&quot;            &quot;$(RimWorldModFolder)\OnlineCity\1.5\&quot;" />
     <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\About\&quot;          &quot;$(RimWorldModFolder)\OnlineCity\About\&quot;" />
     <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\Documentation\&quot;  &quot;$(RimWorldModFolder)\OnlineCity\Documentation\&quot;" />
     <Exec Command="xcopy /ey &quot;$(ProjectDir)..\..\Languages\&quot;      &quot;$(RimWorldModFolder)\OnlineCity\Languages\&quot;" />
@@ -291,9 +292,9 @@
     Copy Comilled files 
     -->
     <Message Importance="high" Text="--Starting deploy compilled project files--" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Release\ISharpZipLib.dll&quot;            &quot;$(RimWorldModFolder)\OnlineCity\1.1\Assemblies&quot;" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Release\OCUnion.dll&quot;                 &quot;$(RimWorldModFolder)\OnlineCity\1.1\Assemblies&quot;" />
-    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Release\RimWorldOnlineCity.dll&quot;      &quot;$(RimWorldModFolder)\OnlineCity\1.1\Assemblies&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Release\ISharpZipLib.dll&quot;            &quot;$(RimWorldModFolder)\OnlineCity\1.5\Assemblies&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Release\OCUnion.dll&quot;                 &quot;$(RimWorldModFolder)\OnlineCity\1.5\Assemblies&quot;" />
+    <Exec Command="xcopy /ey &quot;$(ProjectDir)..\BuildOutput\Client\Release\RimWorldOnlineCity.dll&quot;      &quot;$(RimWorldModFolder)\OnlineCity\1.5\Assemblies&quot;" />
     <Message Importance="high" Text="--Done deploy compilled project files--" />
     <Message Importance="high" Text="DONE!" />
   </Target>

@@ -85,29 +85,6 @@ namespace RimWorldOnlineCity.GameClasses.Harmony
         }
     }
 
-    //Пишем в лог на сервер если на экране есть элементы режима разработчика
-    [HarmonyPatch(typeof(DebugTool))]
-    [HarmonyPatch("DebugToolOnGUI")]
-    internal class DebugTool_DebugToolOnGUI_Patch
-    {
-        private static DateTime LastCheck = DateTime.MinValue;
-
-        [HarmonyPrefix]
-        public static bool Prefix()
-        {
-            if ((DateTime.UtcNow - LastCheck).TotalSeconds < 5) return true;
-            LastCheck = DateTime.UtcNow;
-
-            if (Current.Game == null) return true;
-            if (!SessionClient.Get.IsLogined) return true;
-
-            if (!SessionClientController.Data.DisableDevMode) return true;
-
-            Loger.TransLog("ShowDevMode");
-            return true;
-        }
-    }
-
     /// ////////////////////////////////////////////////////////////
 
     //Выключаем настройки рассказчика
@@ -260,6 +237,20 @@ namespace RimWorldOnlineCity.GameClasses.Harmony
         public static void Postfix(float leftX, float width, ref float curBaseY)
         {
             if (!SessionClient.Get.IsLogined) return;
+
+            var currentEvent = Event.current;
+            if (currentEvent != null
+                && currentEvent.type == EventType.KeyDown
+                && currentEvent.control
+                && currentEvent.alt
+                && currentEvent.shift
+                && currentEvent.keyCode == KeyCode.D)
+            {
+                var enabled = SessionClientController.ToggleNetworkDebugMode();
+                Messages.Message("Network debug " + (enabled ? "enabled" : "disabled") + " (" + SessionClientController.NetworkDebugHotkey + ")", MessageTypeDefOf.NeutralEvent);
+                currentEvent.Use();
+            }
+
             if (OutText == null || OutText.Count == 0) return;
 
             if ((DateTime.UtcNow - Update).TotalSeconds > 5)

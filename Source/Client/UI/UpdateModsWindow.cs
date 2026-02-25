@@ -21,6 +21,9 @@ namespace RimWorldOnlineCity.UI
         public static string HashStatus { get; set; }
         public static List<string> SummaryList { get; set; }
         public static bool CompletedAndClose { get; set; }
+        public static float? ProgressValue { get; private set; }
+        public static bool ProgressIndeterminate { get; private set; }
+        public static string ProgressText { get; private set; }
 
         public bool HideOK { get; set; }
         public Action OnCloseed { get; set; }
@@ -45,6 +48,30 @@ namespace RimWorldOnlineCity.UI
             if (WindowsTitle == null) WindowsTitle = "OC_Mods_Wait".Translate(); // Подождите перед сетевой игрой
         }
 
+        public static void ResetProgress()
+        {
+            ProgressValue = null;
+            ProgressIndeterminate = false;
+            ProgressText = null;
+        }
+
+        public static void SetProgress(double progressValue, string progressText = null)
+        {
+            if (progressValue < 0d) progressValue = 0d;
+            if (progressValue > 1d) progressValue = 1d;
+
+            ProgressValue = (float)progressValue;
+            ProgressIndeterminate = false;
+            ProgressText = progressText;
+        }
+
+        public static void SetIndeterminateProgress(string progressText = null)
+        {
+            ProgressValue = null;
+            ProgressIndeterminate = true;
+            ProgressText = progressText;
+        }
+
         public override void PreOpen()
         {
             base.PreOpen();
@@ -54,6 +81,7 @@ namespace RimWorldOnlineCity.UI
         {
             base.PostClose();
             if (!ResultOK) InputText = null;
+            ResetProgress();
             if (OnCloseed != null) OnCloseed();
         }
 
@@ -94,6 +122,23 @@ namespace RimWorldOnlineCity.UI
             var rect = new Rect(0, 70f, inRect.width, textEditSize.y);
             mainListing.Label(HashStatus, -1f, null);
             mainListing.Gap();
+
+            if (ProgressValue.HasValue || ProgressIndeterminate || !string.IsNullOrEmpty(ProgressText))
+            {
+                var progressRect = mainListing.GetRect(22f);
+                var progressBarValue = ProgressValue ?? 0.35f + Mathf.PingPong(Time.realtimeSinceStartup * 0.8f, 0.45f);
+                Widgets.FillableBar(progressRect, Mathf.Clamp01(progressBarValue));
+
+                if (!string.IsNullOrEmpty(ProgressText))
+                {
+                    var oldAnchor = Text.Anchor;
+                    Text.Anchor = TextAnchor.MiddleCenter;
+                    Widgets.Label(progressRect, ProgressText);
+                    Text.Anchor = oldAnchor;
+                }
+
+                mainListing.Gap();
+            }
 
             if (SummaryList != null)
                 mainListing.Label("OC_Mods_Complete".Translate() + Environment.NewLine + string.Join(Environment.NewLine, SummaryList));

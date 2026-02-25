@@ -18,6 +18,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using Transfer;
 using UnityEngine;
 using Util;
@@ -45,6 +46,7 @@ namespace RimWorldOnlineCity
         private const string SaveNameBase = "onlineCity";
         private static string SaveName => SaveNameBase + "_" + Data.ServerName.NormalizeFileNameChars();
         private static string SaveFullName => GenFilePaths.FilePathForSavedGame(SaveName);
+        private const string ModsConfigFileName = "ModsConfig.xml";
 
         public static StorytellerDef ChoosedTeller { get; set; }
 
@@ -117,6 +119,8 @@ namespace RimWorldOnlineCity
             {
                 Loger.Log("Client CalculateHash start");
                 UpdateModsWindow.Title = "OC_Hash_CalculateLocalFiles".Translate();
+                UpdateModsWindow.ResetProgress();
+                UpdateModsWindow.SetIndeterminateProgress("Scanning...");
                 //Find.WindowStack.Add(new UpdateModsWindow());
                 var factory = new ClientFileCheckerFactory();
 
@@ -133,6 +137,7 @@ namespace RimWorldOnlineCity
                 }
 
                 UpdateModsWindow.Title = "OC_Hash_CalculateComplete".Translate();
+                UpdateModsWindow.ResetProgress();
                 UpdateModsWindow.HashStatus = "OC_Hash_CalculateConfFile".Translate() + ClientFileCheckers[(int)FolderType.ModsConfigPath].FilesHash.Count.ToString() + "\n" +
                 "Mods files: " + ClientFileCheckers[(int)FolderType.ModsFolder].FilesHash.Count.ToString();
                 //Task.Run(() => ClientHashChecker.StartGenerateHashFiles());
@@ -148,6 +153,224 @@ namespace RimWorldOnlineCity
 
         private static object UpdatingWorld = new object();
         private static int GetPlayersInfoCountRequest = 0;
+        private static readonly int[] UpdateWorldIntervalsMs = { 5000, 10000, 15000 };
+        private static DateTime UpdateWorldNextRunAt = DateTime.MinValue;
+        private static int UpdateWorldIdleLevel = 0;
+        private const int NetworkDebugEventsMax = 12;
+        private static readonly object NetworkDebugLock = new object();
+        private static readonly Queue<string> NetworkDebugEvents = new Queue<string>();
+        private static bool NetworkDebugEnabled = false;
+        private static DateTime LastUpdateWorldDebugAt = DateTime.MinValue;
+        private static string LastUpdateWorldDebugSummary = "-";
+        private static DateTime LastSaveQueuedAt = DateTime.MinValue;
+        private static DateTime LastSaveUploadedAt = DateTime.MinValue;
+        private static long LastSaveQueuedBytes = 0;
+        private static long LastSaveUploadedBytes = 0;
+        private static int SaveUploadRetryCount = 0;
+        private static string LastSaveUploadError = null;
+        private static bool SaveInMemoryEnabled = true;
+
+        public static string NetworkDebugHotkey => "Ctrl+Alt+Shift+D";
+        public static bool IsNetworkDebugEnabled => NetworkDebugEnabled;
+
+        public static bool ToggleNetworkDebugMode()
+        {
+            NetworkDebugEnabled = !NetworkDebugEnabled;
+            AddNetworkDebugEvent("Debug mode " + (NetworkDebugEnabled ? "enabled" : "disabled"));
+            UpdateGlobalTooltip();
+            return NetworkDebugEnabled;
+        }
+
+        private static void AddNetworkDebugEvent(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return;
+            var line = DateTime.UtcNow.ToString("HH:mm:ss") + " " + message;
+            lock (NetworkDebugLock)
+            {
+                NetworkDebugEvents.Enqueue(line);
+                while (NetworkDebugEvents.Count > NetworkDebugEventsMax)
+                {
+                    NetworkDebugEvents.Dequeue();
+                }
+            }
+        }
+
+        private static List<string> GetRecentNetworkDebugEvents(int count)
+        {
+            if (count <= 0) return new List<string>();
+            lock (NetworkDebugLock)
+            {
+                return NetworkDebugEvents.Reverse().Take(count).ToList();
+            }
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            if (bytes <= 0) return "0B";
+            if (bytes < 1024L) return bytes + "B";
+            if (bytes < 1024L * 1024L) return (bytes / 1024L) + "KB";
+            return (bytes / (1024L * 1024L)) + "MB";
+        }
+
+        private static void QueueSaveForUpload(byte[] content, bool single, string source)
+        {
+            if (content == null || content.Length <= 1024)
+            {
+                LastSaveUploadError = "empty save data";
+                Loger.Log("Client QueueSaveForUpload skip (empty save data)");
+                return;
+            }
+
+            Data.SaveFileData = content;
+            Data.SingleSave = single;
+            LastSaveQueuedAt = DateTime.UtcNow;
+            LastSaveQueuedBytes = content.LongLength;
+            LastSaveUploadError = null;
+
+            if (NetworkDebugEnabled)
+            {
+                AddNetworkDebugEvent("Save queued " + source + " " + FormatBytes(content.LongLength) + (single ? " single" : ""));
+            }
+        }
+
+        private static string GetSaveOverlayLine()
+        {
+            var pendingSave = Data?.SaveFileData;
+            if (pendingSave != null && pendingSave.Length > 0)
+            {
+                return "SAVE pending " + FormatBytes(pendingSave.LongLength)
+                    + (SaveUploadRetryCount > 0 ? " retry:" + SaveUploadRetryCount : "");
+            }
+
+            if (!string.IsNullOrEmpty(LastSaveUploadError) && LastSaveQueuedAt != DateTime.MinValue)
+            {
+                var sec = (int)Math.Max(0d, (DateTime.UtcNow - LastSaveQueuedAt).TotalSeconds);
+                return "SAVE retry " + sec + "s";
+            }
+
+            if (LastSaveUploadedAt != DateTime.MinValue)
+            {
+                var sec = (int)Math.Max(0d, (DateTime.UtcNow - LastSaveUploadedAt).TotalSeconds);
+                return "SAVE ok " + sec + "s";
+            }
+
+            return null;
+        }
+
+        private static List<string> GetNetworkDebugOverlayLines()
+        {
+            if (!NetworkDebugEnabled) return null;
+
+            var now = DateTime.UtcNow;
+            var connect = SessionClient.Get;
+            var requestStart = connect?.Client?.CurrentRequestStart ?? DateTime.MinValue;
+            var requestInProgress = requestStart != DateTime.MinValue;
+            var requestLength = requestInProgress ? connect.Client.CurrentRequestLength : 0;
+            var requestSeconds = requestInProgress ? (int)Math.Max(0d, (now - requestStart).TotalSeconds) : 0;
+            var nextUpdateSeconds = UpdateWorldNextRunAt == DateTime.MinValue
+                ? -1
+                : (int)Math.Max(0d, (UpdateWorldNextRunAt - now).TotalSeconds);
+
+            var lines = new List<string>
+            {
+                "DBG " + NetworkDebugHotkey,
+                "UW idle:" + UpdateWorldIdleLevel + " next:" + (nextUpdateSeconds < 0 ? "-" : nextUpdateSeconds + "s"),
+                requestInProgress ? "REQ " + requestSeconds + "s " + FormatBytes(requestLength) : "REQ idle",
+                "REC " + (SessionClient.IsRelogin ? "relogin" : "ok") + " try:" + (Data?.CountReconnectBeforeUpdate ?? 0)
+            };
+
+            if (LastUpdateWorldDebugAt != DateTime.MinValue)
+            {
+                var lastUpdateSeconds = (int)Math.Max(0d, (now - LastUpdateWorldDebugAt).TotalSeconds);
+                lines.Add("LastUW " + lastUpdateSeconds + "s " + LastUpdateWorldDebugSummary);
+            }
+
+            foreach (var evt in GetRecentNetworkDebugEvents(2))
+            {
+                lines.Add("E " + evt);
+            }
+
+            return lines;
+        }
+
+        private static string GetNetworkDebugTooltipText()
+        {
+            if (!NetworkDebugEnabled) return null;
+            var pingMs = Data == null ? 0 : (int)Data.Ping.TotalMilliseconds;
+            var lastServerConnectFail = Data != null && Data.LastServerConnectFail;
+
+            var lines = new List<string>
+            {
+                "[Network debug]",
+                "Hotkey: " + NetworkDebugHotkey,
+                "Ping: " + pingMs + "ms",
+                "LastServerConnectFail: " + lastServerConnectFail
+            };
+
+            var events = GetRecentNetworkDebugEvents(8);
+            if (events.Count > 0)
+            {
+                lines.Add("Events:");
+                lines.AddRange(events);
+            }
+
+            return string.Join(Environment.NewLine, lines);
+        }
+
+        private static void ResetUpdateWorldSchedule()
+        {
+            UpdateWorldIdleLevel = 0;
+            UpdateWorldNextRunAt = DateTime.MinValue;
+        }
+
+        private static void ScheduleNextUpdateWorld(bool hasActivity)
+        {
+            if (hasActivity)
+            {
+                UpdateWorldIdleLevel = 0;
+            }
+            else if (UpdateWorldIdleLevel < UpdateWorldIntervalsMs.Length - 1)
+            {
+                UpdateWorldIdleLevel++;
+            }
+
+            UpdateWorldNextRunAt = DateTime.UtcNow.AddMilliseconds(UpdateWorldIntervalsMs[UpdateWorldIdleLevel]);
+        }
+
+        private static bool HasNetworkActivity(ModelPlayToServer toServ, ModelPlayToClient fromServ, bool firstRun)
+        {
+            if (firstRun) return true;
+
+            if ((toServ.WObjects?.Count ?? 0) > 0
+                || (toServ.WObjectsToDelete?.Count ?? 0) > 0
+                || (toServ.SaveFileData?.Length ?? 0) > 0)
+            {
+                return true;
+            }
+
+            return (fromServ.WObjects?.Count ?? 0) > 0
+                || (fromServ.WObjectsToDelete?.Count ?? 0) > 0
+                || (fromServ.WObjectOnlineToAdd?.Count ?? 0) > 0
+                || (fromServ.WObjectOnlineToDelete?.Count ?? 0) > 0
+                || (fromServ.FactionOnlineToAdd?.Count ?? 0) > 0
+                || (fromServ.FactionOnlineToDelete?.Count ?? 0) > 0
+                || (fromServ.Mails?.Count ?? 0) > 0
+                || fromServ.AreAttacking
+                || fromServ.NeedSaveAndExit;
+        }
+
+        private static void UpdateWorldAdaptiveTimer()
+        {
+            if (Current.Game == null) return;
+            if (!SessionClient.Get.IsLogined) return;
+            if (UpdateWorldNextRunAt == DateTime.MinValue)
+            {
+                UpdateWorldNextRunAt = DateTime.UtcNow.AddMilliseconds(UpdateWorldIntervalsMs[0]);
+                return;
+            }
+            if (DateTime.UtcNow < UpdateWorldNextRunAt) return;
+            UpdateWorld(false);
+        }
 
         private static void UpdateWorld(bool firstRun = false)
         {
@@ -156,6 +379,7 @@ namespace RimWorldOnlineCity
                 Command((connect) =>
                 {
                     var errorNum = "0 ";
+                    byte[] saveFileDataToSend = null;
                     try
                     {
                         //собираем пакет на сервер // collecting the package on the server
@@ -164,17 +388,31 @@ namespace RimWorldOnlineCity
                             UpdateTime = Data.UpdateTime, //время прошлого запроса
                         };
                         //данные сохранения игры // save game data
-                        if (Data.SaveFileData != null)
+                        if (Data.SaveFileData != null && Data.SaveFileData.Length > 0)
                         {
                             Data.AddTimeCheckTimerFail = true;
-                            toServ.SaveFileData = Data.SaveFileData;
+                            saveFileDataToSend = Data.SaveFileData;
+                            toServ.SaveFileData = saveFileDataToSend;
                             toServ.SingleSave = Data.SingleSave;
-                            Data.SaveFileData = null;
                         }
                         errorNum += "00 ";
 
                         //метод не выполняется когда игра свернута
-                        if (!ModBaseData.RunMainThreadSync(UpdateWorldController.PrepareInMainThread, 1, true)) return;
+                        if (!ModBaseData.RunMainThreadSync(UpdateWorldController.PrepareInMainThread, 1, true))
+                        {
+                            Data.AddTimeCheckTimerFail = false;
+                            if (saveFileDataToSend != null)
+                            {
+                                SaveUploadRetryCount++;
+                                LastSaveUploadError = "main-thread busy";
+                                if (NetworkDebugEnabled)
+                                {
+                                    AddNetworkDebugEvent("Save postponed (main thread busy)");
+                                }
+                            }
+                            ScheduleNextUpdateWorld(true);
+                            return;
+                        }
 
                         errorNum += "1 ";
                         //собираем данные с планеты // collecting data from the planet
@@ -215,6 +453,21 @@ namespace RimWorldOnlineCity
                         //отправляем на сервер, получаем ответ
                         //we send to the server, we get a response2
                         ModelPlayToClient fromServ = connect.PlayInfo(toServ);
+                        if (saveFileDataToSend != null)
+                        {
+                            if (ReferenceEquals(Data.SaveFileData, saveFileDataToSend))
+                            {
+                                Data.SaveFileData = null;
+                            }
+                            LastSaveUploadedAt = DateTime.UtcNow;
+                            LastSaveUploadedBytes = saveFileDataToSend.LongLength;
+                            SaveUploadRetryCount = 0;
+                            LastSaveUploadError = null;
+                            if (NetworkDebugEnabled)
+                            {
+                                AddNetworkDebugEvent("Save uploaded " + FormatBytes(saveFileDataToSend.LongLength));
+                            }
+                        }
                         if (Data.AddTimeCheckTimerFail)
                         {
                             if (Timers != null) Timers.LastLoop = DateTime.UtcNow; //сбрасываем, чтобы проверка по диссконекту не сбросла подключение
@@ -236,6 +489,12 @@ namespace RimWorldOnlineCity
                             + ((fromServ.FactionOnlineList?.Count ?? 0) > 0 ? " Faction<-" + fromServ.FactionOnlineList.Count : "")
                             + ((fromServ.WObjectOnlineList?.Count ?? 0) > 0 ? " NonPWO<-" + fromServ.WObjectOnlineList.Count : "")
                             );
+                        LastUpdateWorldDebugAt = DateTime.UtcNow;
+                        LastUpdateWorldDebugSummary =
+                            "outWO:" + (toServ.WObjects?.Count ?? 0)
+                            + " inWO:" + (fromServ.WObjects?.Count ?? 0)
+                            + " inMail:" + (fromServ.Mails?.Count ?? 0)
+                            + " del:" + (fromServ.WObjectsToDelete?.Count ?? 0);
 
                         //сохраняем время актуальности данных
                         Data.UpdateTime = fromServ.UpdateTime;
@@ -303,10 +562,27 @@ namespace RimWorldOnlineCity
                             GameAttackHost.Get.Start(connect);
                         }
 
+                        var hasActivity = HasNetworkActivity(toServ, fromServ, firstRun);
+                        ScheduleNextUpdateWorld(hasActivity);
+                        if (NetworkDebugEnabled && hasActivity)
+                        {
+                            AddNetworkDebugEvent((firstRun ? "UpdateWorld first sync " : "UpdateWorld activity ")
+                                + LastUpdateWorldDebugSummary);
+                        }
                         Data.CountReconnectBeforeUpdate = 0;
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        Data.AddTimeCheckTimerFail = false;
+                        if (saveFileDataToSend != null)
+                        {
+                            SaveUploadRetryCount++;
+                            LastSaveUploadError = ex.Message;
+                            if (NetworkDebugEnabled)
+                            {
+                                AddNetworkDebugEvent("Save upload retry: " + ex.Message);
+                            }
+                        }
                         Loger.Log("Client  Exception errorNum = " + errorNum);
                         throw;
                     }
@@ -385,21 +661,67 @@ namespace RimWorldOnlineCity
             SaveGameNow(single, act);
         }
 
-        private static byte[] SaveGameCore()
+        private static byte[] SaveGameCoreFromMemory()
         {
-            byte[] content;
             try
             {
                 ScribeSaver_InitSaving_Patch.Enable = true;
                 GameDataSaveLoader.SaveGame(SaveName);
-                //content = File.ReadAllBytes(SaveFullName);
-                content = ScribeSaver_InitSaving_Patch.SaveData.ToArray();
+                return ScribeSaver_InitSaving_Patch.SaveData?.ToArray();
             }
             finally
             {
                 ScribeSaver_InitSaving_Patch.Enable = false;
                 ScribeSaver_InitSaving_Patch.SaveData = null;
             }
+        }
+
+        private static byte[] SaveGameCoreFromDisk()
+        {
+            ScribeSaver_InitSaving_Patch.Enable = false;
+            ScribeSaver_InitSaving_Patch.SaveData = null;
+
+            GameDataSaveLoader.SaveGame(SaveName);
+            if (!File.Exists(SaveFullName)) return null;
+            return File.ReadAllBytes(SaveFullName);
+        }
+
+        private static byte[] SaveGameCore()
+        {
+            byte[] content = null;
+            Exception memorySaveException = null;
+
+            if (SaveInMemoryEnabled)
+            {
+                try
+                {
+                    content = SaveGameCoreFromMemory();
+                }
+                catch (Exception ex)
+                {
+                    memorySaveException = ex;
+                    SaveInMemoryEnabled = false;
+                    Loger.Log("Client SaveGameCore memory mode disabled: " + ex);
+                }
+
+                if (content == null || content.Length <= 1024)
+                {
+                    SaveInMemoryEnabled = false;
+                    Loger.Log("Client SaveGameCore memory mode returned too small data. Falling back to disk.");
+                }
+            }
+
+            if (content == null || content.Length <= 1024)
+            {
+                content = SaveGameCoreFromDisk();
+            }
+
+            if (content == null || content.Length <= 1024)
+            {
+                if (memorySaveException != null) throw memorySaveException;
+                throw new ApplicationException("Client SaveGameCore failed: save data is empty.");
+            }
+
             try
             {
                 File.WriteAllBytes(SaveFullName, content);
@@ -407,6 +729,7 @@ namespace RimWorldOnlineCity
             catch
             {
             }
+
             return content;
         }
 
@@ -509,12 +832,31 @@ namespace RimWorldOnlineCity
                         (SessionClient.IsRelogin || Data.LastServerConnectFail
                             ? (string)("(!) " + "OCity_Dialog_Connecting".TranslateCache() + " ")
                             : (SessionClient.Get?.IsLogined ?? false)
-                            ? (string)($"✔ " + (int)Data.Ping.TotalMilliseconds + new TaggedString("ms")) : "X ")
+                            ? (string)($"OK " + (int)Data.Ping.TotalMilliseconds + new TaggedString("ms")) : "X ")
                         + " " + SessionClientController.My.Login
                         };
                 GlobalControlsUtility_DoDate_Patch.TooltipText = string.Format(
                     "OC_SessionCC_Info".Translate() +"." + "OC_SessionCC_Balance".Translate()
                     , Data.ServerName + " (" + (ModBaseData.GlobalData?.LastIP?.Value ?? "") + ")", My.Login);
+
+                var saveLine = GetSaveOverlayLine();
+                if (!string.IsNullOrEmpty(saveLine))
+                {
+                    GlobalControlsUtility_DoDate_Patch.OutText.Add(saveLine);
+                }
+
+                var debugLines = GetNetworkDebugOverlayLines();
+                if (debugLines != null && debugLines.Count > 0)
+                {
+                    GlobalControlsUtility_DoDate_Patch.OutText.AddRange(debugLines);
+                }
+
+                var debugTooltip = GetNetworkDebugTooltipText();
+                if (!string.IsNullOrEmpty(debugTooltip))
+                {
+                    GlobalControlsUtility_DoDate_Patch.TooltipText += Environment.NewLine + debugTooltip;
+                }
+
                 if (!SessionClient.IsRelogin && !Data.LastServerConnectFail && Data.CashlessBalance != 0)
                 {
                     var mon = Data.CashlessBalance.ToString(); //ToStringMoney();
@@ -987,6 +1329,7 @@ namespace RimWorldOnlineCity
         private static void TimersStop()
         {
             ReconnectSupportRuning = false;
+            ResetUpdateWorldSchedule();
             Loger.Log("Client TimersStop b");
             if (TimerReconnect != null) TimerReconnect.Stop();
             TimerReconnect = null;
@@ -1168,6 +1511,17 @@ namespace RimWorldOnlineCity
             {
                 if (resultCheckFiles != null)
                 {
+                    var missingRequiredContentMessage = serverInfo.IsModsWhitelisted
+                        ? GetMissingRequiredContentMessage()
+                        : null;
+                    if (!string.IsNullOrEmpty(missingRequiredContentMessage))
+                    {
+                        Disconnected(resultCheckFiles
+                            + Environment.NewLine + Environment.NewLine
+                            + missingRequiredContentMessage);
+                        return;
+                    }
+
                     //var msg = "OCity_SessionCC_FilesUpdated".Translate() + Environment.NewLine
                     //     + (UpdateModsWindow.SummaryList == null ? ""
                     //        : Environment.NewLine
@@ -1185,6 +1539,16 @@ namespace RimWorldOnlineCity
                 }
 
                 //создаем мир, если мы админ
+                if (serverInfo.IsModsWhitelisted)
+                {
+                    var missingRequiredContentMessage = GetMissingRequiredContentMessage();
+                    if (!string.IsNullOrEmpty(missingRequiredContentMessage))
+                    {
+                        Disconnected(missingRequiredContentMessage);
+                        return;
+                    }
+                }
+
                 if (serverInfo.IsAdmin && serverInfo.Seed == "")
                 {
                     Loger.Log("Client InitConnected() IsAdmin");
@@ -1231,16 +1595,71 @@ namespace RimWorldOnlineCity
         private static void LoadPlayerWorld(ModelInfo serverInfo)
         {
             Loger.Log("Client LoadPlayerWorld");
+            UpdateModsWindow.WindowsTitle = "Online City";
+            UpdateModsWindow.Title = "Loading world from server";
+            UpdateModsWindow.HashStatus = "Please wait, this may take a while";
+            UpdateModsWindow.SummaryList = null;
+            UpdateModsWindow.ResetProgress();
+            UpdateModsWindow.SetIndeterminateProgress("Loading...");
 
-            var connect = SessionClient.Get;
-            var worldData = connect.WorldLoad();
+            var form = new UpdateModsWindow()
+            {
+                doCloseX = false,
+                HideOK = true
+            };
+            Find.WindowStack.Add(form);
 
+            AddNetworkDebugEvent("WorldLoad start");
+
+            Task.Factory.StartNew(() =>
+            {
+                ModelInfo worldData = null;
+                Exception worldLoadException = null;
+                try
+                {
+                    var connect = SessionClient.Get;
+                    worldData = connect.WorldLoad();
+                }
+                catch (Exception ex)
+                {
+                    worldLoadException = ex;
+                    Loger.Log("Client LoadPlayerWorld exception: " + ex);
+                }
+
+                ModBaseData.RunMainThread(() =>
+                {
+                    if (worldLoadException != null)
+                    {
+                        UpdateModsWindow.CompletedAndClose = true;
+                        AddNetworkDebugEvent("WorldLoad fail " + worldLoadException.Message);
+                        Disconnected("Error " + worldLoadException.Message);
+                        return;
+                    }
+
+                    if (worldData == null || worldData.SaveFileData == null || worldData.SaveFileData.Length == 0)
+                    {
+                        UpdateModsWindow.CompletedAndClose = true;
+                        AddNetworkDebugEvent("WorldLoad fail empty data");
+                        Disconnected("Error world data is empty");
+                        return;
+                    }
+
+                    UpdateModsWindow.SetProgress(1d, "100%");
+                    UpdateModsWindow.CompletedAndClose = true;
+                    AddNetworkDebugEvent("WorldLoad ok " + FormatBytes(worldData.SaveFileData.Length));
+                    LoadPlayerWorldData(worldData);
+                });
+            });
+        }
+
+        private static void LoadPlayerWorldData(ModelInfo worldData)
+        {
             Action loadAction = () =>
             {
                 LongEventHandler.QueueLongEvent(delegate
                 {
                     Current.Game = new Game { InitData = new GameInitData { gameToLoad = SaveName } };
-                    
+
                     Current.Game.storyteller = GetStoryteller(Data.GeneralSettings.Difficulty, GameUtils.GetStorytallerByName(Data.GeneralSettings.StorytellerDef));
                     Loger.Log($"storyteller: {Current.Game.storyteller.def.defName}      difficulty: {Current.Game.storyteller.difficultyDef.defName}");
                     GameLoades.AfterLoad = () =>
@@ -1250,31 +1669,8 @@ namespace RimWorldOnlineCity
                         ScribeLoader_InitLoading_Patch.Enable = false;
                         ScribeLoader_InitLoading_Patch.LoadData = null;
 
-                        //Непосредственно после загрузки игры
                         InitGame();
                     };
-                    /* вместо этого сделал через гармонику
-                    LongEventHandler.ExecuteWhenFinished(() =>
-                    {
-                        var th = new Thread(() =>
-                        {
-                            //не знаю как правильно привязаться к событию окончания загрузки мира
-                            while (Current.Game == null || Current.Game.World == null || Find.WorldObjects == null)
-                            {
-                                Thread.Sleep(100);
-                                Loger.Log("Sleep(100)");
-                            }
-                            Thread.Sleep(100);
-                            LongEventHandler.QueueLongEvent(delegate
-                            {
-                                //Непосредственно после загрузки игры
-                                InitGame();
-                            }, "", false, null);
-                        });
-                        th.IsBackground = true;
-                        th.Start();
-                    });
-                    */
                 }, "Play", "LoadingLongEvent", false, null);
             };
 
@@ -1284,9 +1680,7 @@ namespace RimWorldOnlineCity
             PreLoadUtility.CheckVersionAndLoad(SaveFullName, ScribeMetaHeaderUtility.ScribeHeaderMode.Map, loadAction);
         }
 
-
-        //Создание мира для обычного игрока
-
+        //Create world for regular player
         private static void CreatePlayerWorld(ModelInfo serverInfo)
         {
             Loger.Log("Client InitConnected() ExistMap0");
@@ -1348,23 +1742,114 @@ namespace RimWorldOnlineCity
             Loger.Log("Client InitConnected() ExistMap3");
             //после создания мира запускаем его обработку, загружаем поселения др. игроков
             UpdateWorldController.InitGame();
-            UpdateWorld(true);
+            StartInitialWorldSyncWithProgress(() =>
+            {
+                Timers.Add(10000, PingServer);
 
-            Timers.Add(10000, PingServer);
+                Loger.Log("Client InitConnected() ExistMap4");
+                var form = GetFirstConfigPage(true);
+                if (form != null)
+                {
+                    Find.WindowStack.Add(form);
+                }
 
-            Loger.Log("Client InitConnected() ExistMap4");
-            var form = GetFirstConfigPage();
-            Find.WindowStack.Add(form);
+                Loger.Log("Client InitConnected() ExistMap5");
 
-            Loger.Log("Client InitConnected() ExistMap5");
+                MemoryUtility.UnloadUnusedUnityAssets();
 
-            MemoryUtility.UnloadUnusedUnityAssets();
+                Loger.Log("Client InitConnected() ExistMap6");
+                Find.World.renderer.RegenerateAllLayersNow();
 
-            Loger.Log("Client InitConnected() ExistMap6");
-            Find.World.renderer.RegenerateAllLayersNow();
+                Loger.Log("Client InitConnected() ExistMap7");
+            });
 
-            Loger.Log("Client InitConnected() ExistMap7");
+        }
 
+        private static void StartInitialWorldSyncWithProgress(Action onComplete)
+        {
+            UpdateModsWindow.WindowsTitle = "Online City";
+            UpdateModsWindow.Title = "Synchronizing world";
+            UpdateModsWindow.HashStatus = "Please wait, this may take a while";
+            UpdateModsWindow.SummaryList = null;
+            UpdateModsWindow.ResetProgress();
+            UpdateModsWindow.SetIndeterminateProgress("Preparing...");
+
+            Find.WindowStack.Add(new UpdateModsWindow()
+            {
+                doCloseX = false,
+                HideOK = true
+            });
+
+            var stopProgressFlag = 0;
+            Task.Factory.StartNew(() =>
+            {
+                while (Interlocked.CompareExchange(ref stopProgressFlag, 0, 0) == 0)
+                {
+                    try
+                    {
+                        var connect = SessionClient.Get;
+                        var total = connect?.Client?.CurrentRequestLength ?? 0L;
+                        var done = connect?.Client?.CurrentRequestProgressLength ?? 0L;
+                        if (done < 0) done = 0;
+                        if (total > 0 && done > total) done = total;
+
+                        if (total <= 0)
+                        {
+                            UpdateModsWindow.SetIndeterminateProgress("Syncing...");
+                        }
+                        else
+                        {
+                            var ratio = Math.Max(0d, Math.Min(1d, (double)done / total));
+                            var progress = 0.1d + ratio * 0.85d;
+                            var progressText = ((int)Math.Round(ratio * 100d)).ToString()
+                                + "% (" + FormatBytes(done) + "/" + FormatBytes(total) + ")";
+                            UpdateModsWindow.SetProgress(progress, progressText);
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    Thread.Sleep(150);
+                }
+            });
+
+            Task.Factory.StartNew(() =>
+            {
+                Exception syncException = null;
+                try
+                {
+                    UpdateWorld(true);
+                }
+                catch (Exception ex)
+                {
+                    syncException = ex;
+                    Loger.Log("Client StartInitialWorldSyncWithProgress exception: " + ex);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref stopProgressFlag, 1);
+                }
+
+                ModBaseData.RunMainThread(() =>
+                {
+                    UpdateModsWindow.SetProgress(1d, "100%");
+                    UpdateModsWindow.CompletedAndClose = true;
+
+                    if (syncException != null)
+                    {
+                        Disconnected("Error " + syncException.Message);
+                        return;
+                    }
+
+                    if (!SessionClient.Get.IsLogined)
+                    {
+                        return;
+                    }
+
+                    onComplete?.Invoke();
+                });
+            });
         }
 
         public static WorldObjectOnline GetWorldObjects(WorldObject obj)
@@ -1384,12 +1869,17 @@ namespace RimWorldOnlineCity
                 return;
             }
 
+            UpdateModsWindow.ResetProgress();
+            UpdateModsWindow.SetIndeterminateProgress("Preparing...");
+
             var form = new UpdateModsWindow()
             {
                 doCloseX = false
             };
             Find.WindowStack.Add(form);
             form.HideOK = true;
+
+            AddNetworkDebugEvent("Mod sync start");
 
             Task.Factory.StartNew(() =>
             {
@@ -1402,6 +1892,7 @@ namespace RimWorldOnlineCity
                     approveModList = approveModList && res;
                 }
 
+                AddNetworkDebugEvent("Mod sync done");
                 UpdateModsWindow.CompletedAndClose = true;
                 form.OnCloseed = () =>
                 { 
@@ -1410,13 +1901,144 @@ namespace RimWorldOnlineCity
             });
 
         }
-
-        public static Page GetFirstConfigPage()
+        private static string GetMissingRequiredContentMessage()
         {
-            //скопированно из Scenario.GetFirstConfigPage()
+            var requiredPackageIds = GetRequiredLudeonPackageIdsFromModsConfig();
+            if (requiredPackageIds.Count == 0)
+            {
+                return null;
+            }
+
+            var installedPackageIds = ModLister.AllInstalledMods
+                .Select(modMeta => modMeta?.PackageId)
+                .Where(packageId => !string.IsNullOrEmpty(packageId))
+                .Select(packageId => packageId.Trim().ToLowerInvariant())
+                .ToHashSet();
+
+            var missingPackageIds = requiredPackageIds
+                .Where(packageId => !installedPackageIds.Contains(packageId))
+                .Distinct()
+                .OrderBy(packageId => packageId)
+                .ToList();
+            if (missingPackageIds.Count == 0)
+            {
+                return null;
+            }
+
+            var text = new StringBuilder();
+            text.AppendLine("Missing required DLC/content from server ModsConfig.xml:");
+            foreach (var packageId in missingPackageIds)
+            {
+                text.AppendLine(packageId);
+            }
+            text.Append("Install and enable the listed DLC/content, then restart the game.");
+            return text.ToString();
+        }
+
+        private static List<string> GetRequiredLudeonPackageIdsFromModsConfig()
+        {
+            var modsConfigPath = Path.Combine(GenFilePaths.ConfigFolderPath, ModsConfigFileName);
+            if (!File.Exists(modsConfigPath))
+            {
+                return new List<string>();
+            }
+
+            try
+            {
+                return XDocument.Load(modsConfigPath)
+                    .Descendants("li")
+                    .Select(li => (li.Value ?? string.Empty).Trim().ToLowerInvariant())
+                    .Where(packageId => packageId.StartsWith("ludeon.rimworld.")
+                        && packageId != "ludeon.rimworld")
+                    .Distinct()
+                    .ToList();
+            }
+            catch (Exception ext)
+            {
+                Loger.Log("Client GetRequiredLudeonPackageIdsFromModsConfig exception: " + ext.ToString());
+                return new List<string>();
+            }
+        }
+
+        private static bool IsClientWorldSetupPage(Page page)
+        {
+            var pageName = page?.GetType()?.Name;
+            return pageName == "Page_SelectStoryteller"
+                || pageName == "Page_ChooseStoryteller"
+                || pageName == "Page_CreateWorldParams";
+        }
+
+        private static Page SkipClientWorldSetupPages(Page firstPage)
+        {
+            if (firstPage == null) return null;
+
+            Page firstKept = null;
+            Page previousKept = null;
+            var current = firstPage;
+            while (current != null)
+            {
+                var next = current.next;
+                if (!IsClientWorldSetupPage(current))
+                {
+                    if (firstKept == null)
+                    {
+                        firstKept = current;
+                    }
+
+                    if (previousKept != null && !ReferenceEquals(previousKept.next, current))
+                    {
+                        previousKept.next = current;
+                        previousKept.nextAct = null;
+                    }
+
+                    previousKept = current;
+                }
+
+                current = next;
+            }
+
+            if (previousKept != null)
+            {
+                previousKept.next = null;
+            }
+
+            return firstKept;
+        }
+
+        public static Page GetFirstConfigPage(bool skipClientWorldSetupPages = false)
+        {
+            try
+            {
+                var scenario = Current.Game?.Scenario ?? GameStarter.SetScenario;
+                var scenarioPage = scenario?.GetFirstConfigPage();
+                if (skipClientWorldSetupPages)
+                {
+                    scenarioPage = SkipClientWorldSetupPages(scenarioPage);
+                }
+                if (scenarioPage != null)
+                {
+                    var lastPage = scenarioPage;
+                    while (lastPage.next != null)
+                    {
+                        lastPage = lastPage.next;
+                    }
+                    if (lastPage.nextAct == null)
+                    {
+                        lastPage.nextAct = delegate
+                        {
+                            PageUtility.InitGameStart();
+                        };
+                    }
+                    return scenarioPage;
+                }
+            }
+            catch (Exception ext)
+            {
+                Loger.Log("Client GetFirstConfigPage fallback: " + ext.ToString());
+            }
+
+            //fallback to the custom page chain for edge cases
             List<Page> list = new List<Page>();
-            //list.Add(new Page_SelectStoryteller());
-            //list.Add(new Page_CreateWorldParams());
             list.Add(new Page_SelectStartingSite());
             if (ModsConfig.IdeologyActive)
             {
@@ -1451,7 +2073,14 @@ namespace RimWorldOnlineCity
             //Удаление лишнего, добавление того, что нужно в пустом новом мире на сервере
             //Remove unnecessary, add what you need in an empty new world on the server
 
-            //to do
+            var allWorldObjects = GameUtils.GetAllWorldObjects();
+            var nonPlayerSettlements = allWorldObjects
+                .Where(wo => wo is Settlement)
+                .Where(wo => wo.HasName && !(wo.Faction?.IsPlayer ?? false))
+                .ToList();
+            var nonPlayerFactions = Find.FactionManager.AllFactionsListForReading
+                .Where(f => !f.IsPlayer)
+                .ToList();
 
             //передаем полученное
             var toServ = new ModelCreateWorld();
@@ -1461,12 +2090,12 @@ namespace RimWorldOnlineCity
             toServ.ScenarioName = GameStarter.SetScenarioName;
             toServ.Difficulty = GameStarter.SetDifficulty;
             toServ.Storyteller = ChoosedTeller.defName;
-            /*
-            toServ.WObjects = Find.World.worldObjects.AllWorldObjects
-                .Select(wo => new WorldObjectEntry(wo))
+            toServ.WObjectOnlineList = nonPlayerSettlements
+                .Select(UpdateWorldController.GetWorldObjects)
                 .ToList();
-            */
-            //to do
+            toServ.FactionOnlineList = nonPlayerFactions
+                .Select(UpdateWorldController.GetFactions)
+                .ToList();
 
             var connect = SessionClient.Get;
             string msg;
@@ -1581,6 +2210,7 @@ namespace RimWorldOnlineCity
             SessionClient.IsRelogin = true;
             ReconnectSupportInit();
             ReconnectSupportRuning = true;
+            AddNetworkDebugEvent("Reconnect start");
             try
             {
                 var repeat = 3;
@@ -1593,6 +2223,7 @@ namespace RimWorldOnlineCity
                         {
                             Data.LastServerConnectFail = false;
                             Loger.Log($"Client CheckReconnectTimer() OK #{Data.CountReconnectBeforeUpdate}");
+                            AddNetworkDebugEvent("Reconnect ok #" + Data.CountReconnectBeforeUpdate);
                             if (Data.ActionAfterReconnect != null)
                             {
                                 var aar = Data.ActionAfterReconnect;
@@ -1605,6 +2236,7 @@ namespace RimWorldOnlineCity
                     catch (Exception ex)
                     {
                         Loger.Log("Client CheckReconnectTimer() Exception:" + ex.ToString());
+                        AddNetworkDebugEvent("Reconnect exception " + ex.Message);
                     }
                     var sleep = 7000;
                     while (sleep > 0)
@@ -1615,6 +2247,7 @@ namespace RimWorldOnlineCity
                         sleep -= 500;
                     }
                 }
+                AddNetworkDebugEvent("Reconnect failed");
                 return false;
             }
             finally
@@ -1623,6 +2256,15 @@ namespace RimWorldOnlineCity
                 SessionClient.IsRelogin = false;
                 ReconnectSupportRuning = false;
             }
+        }
+
+        private static long GetReconnectTimeoutSeconds(long requestLength)
+        {
+            if (requestLength < 1024L * 512L) return 20;
+            if (requestLength < 1024L * 1024L * 2L) return 60;
+            if (requestLength < 1024L * 1024L * 10L) return 240;
+            if (requestLength < 1024L * 1024L * 50L) return 900;
+            return 1800;
         }
 
         /// <summary>
@@ -1646,42 +2288,48 @@ namespace RimWorldOnlineCity
                 //Loger.Log("Client TestBagSD CRTb");
                 var connect = SessionClient.Get;
                 var needReconnect = false;
+                string reconnectReason = null;
+                var requestInProgress = connect.Client.CurrentRequestStart != DateTime.MinValue;
                 //проверка коннекта
-                if (connect.Client.CurrentRequestStart != DateTime.MinValue)
+                if (requestInProgress)
                 {
                     var sec = (long)(DateTime.UtcNow - connect.Client.CurrentRequestStart).TotalSeconds;
                     var len = connect.Client.CurrentRequestLength;
-                    if (len < 1024 * 512 && sec > 15
-                        || len < 1024 * 1024 * 2 && sec > 30
-                        || sec > 120)
+                    var requestTimeout = GetReconnectTimeoutSeconds(len);
+                    if (sec > requestTimeout)
                     {
                         needReconnect = true;
-                        Loger.Log($"Client ReconnectWithTimers len={len} sec={sec} noPing={Data.LastServerConnectFail}");
+                        reconnectReason = "request timeout";
+                        Loger.Log($"Client ReconnectWithTimers len={len} sec={sec} timeout={requestTimeout} noPing={Data.LastServerConnectFail}");
                     }
                 }
                 //проверка пропажи пинга
-                if (!needReconnect && Data.LastServerConnectFail)
+                if (!needReconnect && !requestInProgress && Data.LastServerConnectFail)
                 {
                     needReconnect = true;
+                    reconnectReason = "no ping";
                     Loger.Log($"Client ReconnectWithTimers noPing");
                 }
                 //проверка не завис ли поток с таймером
-                if (!needReconnect && !Data.DontCheckTimerFail && !Timers.IsStop && Timers.LastLoop != DateTime.MinValue)
+                if (!needReconnect && !requestInProgress && !Data.DontCheckTimerFail && !Timers.IsStop && Timers.LastLoop != DateTime.MinValue)
                 {
                     var sec = (long)(DateTime.UtcNow - Timers.LastLoop).TotalSeconds;
                     if (sec > (Data.AddTimeCheckTimerFail ? 120 : 30))
                     {
                         needReconnect = true;
+                        reconnectReason = "timer stall";
                         Loger.Log($"Client ReconnectWithTimers timerFail {sec}");
                         Timers.LastLoop = DateTime.UtcNow; //сбрасываем, т.к. поток в таймере продолжает ждать наш коннект
                     }
                 }
                 if (needReconnect)
                 {
+                    AddNetworkDebugEvent("Reconnect trigger " + (reconnectReason ?? "unknown"));
                     //котострофа
                     if (++Data.CountReconnectBeforeUpdate > 4 || !ReconnectWithTimers())
                     {
                         Loger.Log("Client CheckReconnectTimer Disconnected after try reconnect");
+                        AddNetworkDebugEvent("Disconnected after reconnect tries");
                         Disconnected("OCity_SessionCC_Disconnected".Translate()
                             , Data.CountReconnectBeforeUpdate > 4 ? () =>
                             {
@@ -1695,6 +2343,7 @@ namespace RimWorldOnlineCity
             {
                 //Никогда не должен был сюда заходить, но как то раз зашел, почему - так и не разобрались. Но теперь этот код тут :)
                 Loger.Log("Client CheckReconnectTimer exception: " + e.ToString(), Loger.LogLevel.ERROR);
+                AddNetworkDebugEvent("CheckReconnectTimer exception " + e.Message);
                 try
                 {
                     Disconnected("OCity_SessionCC_Disconnected".Translate());
@@ -1726,13 +2375,14 @@ namespace RimWorldOnlineCity
                 UpdateColonyScreenLastTickBySettlementID = new Dictionary<long, long>();
 
                 //сбрасываем с мышки выбранный инструмент DevMode
-                DebugTools.curTool = null;
+                LudeonTK.DebugTools.curTool = null;
 
                 MainButtonWorker_OC.ShowOnStart();
                 UpdateWorldController.ClearWorld();
                 UpdateWorldController.InitGame();
                 ChatController.Init(true);
                 Data.UpdateTime = DateTime.MinValue;
+                ResetUpdateWorldSchedule();
                 //UpdateWorld Синхронизация мира
                 UpdateWorld(true);
                 Data.LastServerConnect = DateTime.MinValue;
@@ -1741,10 +2391,10 @@ namespace RimWorldOnlineCity
 
                 Timers.Add(500, UpdateChats);
                 //Обновление мира
-                Timers.Add(5000, () => UpdateWorld(false));
+                Timers.Add(1000, UpdateWorldAdaptiveTimer);
                 //Пинг раз в 10 сек для поддержания соединения
                 Timers.Add(10000, PingServer);
-                //Сохранение игры
+                //Обновление мира
                 Timers.Add(60000 * Data.DelaySaveGame, BackgroundSaveGame);
                 //Следит за 1 таймером, создаёт новое соединение
                 TimerReconnect.Add(1000, CheckReconnectTimer);

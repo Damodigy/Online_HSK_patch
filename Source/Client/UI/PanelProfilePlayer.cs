@@ -2,6 +2,7 @@
 using OCUnion;
 using OCUnion.Transfer;
 using OCUnion.Transfer.Model;
+using RimWorld;
 using RimWorldOnlineCity.Services;
 using RimWorldOnlineCity.UI;
 using System;
@@ -218,6 +219,18 @@ namespace RimWorldOnlineCity
             if (Widgets.ButtonText(rect, "OCity_PlayerClient_Save".Translate()))
             {
                 Save();
+            }
+
+            rect = new Rect(inRect.x + 290f, inRect.y + topOffset, 240f, 30f);
+            var debugButtonText = SessionClientController.IsNetworkDebugEnabled
+                ? "Network debug: ON"
+                : "Network debug: OFF";
+            if (Widgets.ButtonText(rect, debugButtonText))
+            {
+                var enabled = SessionClientController.ToggleNetworkDebugMode();
+                Messages.Message("Network debug " + (enabled ? "enabled" : "disabled")
+                    + " (" + SessionClientController.NetworkDebugHotkey + ")",
+                    MessageTypeDefOf.NeutralEvent);
             }
 
         }

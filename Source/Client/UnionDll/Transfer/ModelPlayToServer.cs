@@ -13,6 +13,11 @@ namespace Transfer
         public DateTime UpdateTime { get; set; }
         public List<WorldObjectEntry> WObjects { get; set; }
         public List<WorldObjectEntry> WObjectsToDelete { get; set; }
+        /// <summary>
+        /// True for regular world updates (including delta updates), false for initial sync.
+        /// Needed so empty delta payload is not treated as "first run" by server.
+        /// </summary>
+        public bool IsWorldObjectsSync { get; set; }
         public byte[] SaveFileData { get; set; }
         public bool SingleSave { get; set; }
         public long LastTick { get; set; }

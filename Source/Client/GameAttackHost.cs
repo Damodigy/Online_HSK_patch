@@ -411,8 +411,7 @@ namespace RimWorldOnlineCity
                         {
                             /*try
                             {*/
-                                mapPawns = new Pawn[GameMap.mapPawns.AllPawnsSpawned.Count];
-                                GameMap.mapPawns.AllPawnsSpawned.CopyTo(mapPawns);
+                                mapPawns = GameMap.mapPawns.AllPawnsSpawned.ToArray();
                                 /*
                             }
                             catch
@@ -600,8 +599,7 @@ namespace RimWorldOnlineCity
                         AttackHostFromSrv toClient;
                         lock (ToSendListsSync)
                         {
-                            var mapPawnsA = new Pawn[GameMap.mapPawns.AllPawnsSpawned.Count];
-                            GameMap.mapPawns.AllPawnsSpawned.CopyTo(mapPawnsA);
+                            var mapPawnsA = GameMap.mapPawns.AllPawnsSpawned.ToArray();
                             AllPawns = mapPawnsA.ToDictionary(p => p.thingIDNumber);
 
                             //проверяем условия победы (в паузе не проверяются, как проверка чтобы не проверялось до полной загрузки)

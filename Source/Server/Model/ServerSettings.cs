@@ -25,6 +25,12 @@ namespace ServerCore.Model
         public bool IsModsWhitelisted { get; set; }
 
         /// <summary>
+        /// Maximum size of one file-sync packet in megabytes.
+        /// Lower value is safer for slow connections, higher value is faster for big modpacks.
+        /// </summary>
+        public int MaxFileSyncPacketSizeMb { get; set; } = 5;
+
+        /// <summary>
         /// Disable DevMode
         /// </summary>
         public bool DisableDevMode { get; set; }
@@ -147,6 +153,11 @@ namespace ServerCore.Model
             if (obj.SaveInterval < 10000 || obj.SaveInterval > 100000)
             {
                 errors.Add(new ValidationResult("Save interval must be betwen 10000 ms  and 100000"));
+            }
+
+            if (obj.MaxFileSyncPacketSizeMb < 1 || obj.MaxFileSyncPacketSizeMb > 256)
+            {
+                errors.Add(new ValidationResult("MaxFileSyncPacketSizeMb must be between 1 and 256"));
             }
 
             //if (obj.IsModsWhitelisted)

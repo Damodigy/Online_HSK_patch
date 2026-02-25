@@ -97,9 +97,10 @@ namespace OCUnion.Common
             }, TaskCreationOptions.LongRunning);
         }
 
-        public static void FileSynchronization(string modsDir, ModelModsFilesResponse serverFiles)
+        public static List<string> FileSynchronization(string modsDir, ModelModsFilesResponse serverFiles, Dictionary<string, long> resumeFrom)
         {
             restoreFolderTree(modsDir, serverFiles.FoldersTree);
+            var completedFiles = new List<string>();
 
             foreach (var serverFile in serverFiles.Files)
             {
@@ -107,29 +108,92 @@ namespace OCUnion.Common
                 if (!serverFile.NeedReplace) continue;
 
                 var fullName = Path.Combine(modsDir, serverFile.FileName);
-                // Имя присутствует в списке, файл необходимо будет удалить ( или заменить)
-                if (File.Exists(fullName))
-                {
-                    File.Delete(fullName);
-                }
+                var partName = GetPartFileName(fullName);
+                var key = serverFile.FileName.ToLower();
 
                 if (serverFile.Hash == null)
                 {
+                    // Имя присутствует в списке, файл необходимо удалить.
+                    if (File.Exists(fullName)) File.Delete(fullName);
+                    if (File.Exists(partName)) File.Delete(partName);
+                    resumeFrom?.Remove(key);
+                    completedFiles.Add(serverFile.FileName);
                     continue;
                 }
 
-
-                // Create the file, or overwrite if the file must exist.
-                using (FileStream fs = File.Create(fullName))
+                var isChunk = serverFile.ChunkTotalSize > 0;
+                if (!isChunk)
                 {
-                    Loger.Log("Restore: " + fullName);
+                    if (File.Exists(fullName)) File.Delete(fullName);
+                    if (File.Exists(partName)) File.Delete(partName);
 
+                    // Create the file, or overwrite if the file must exist.
+                    using (FileStream fs = File.Create(fullName))
+                    {
+                        Loger.Log("Restore: " + fullName);
+                        if (serverFile.Hash.Length > 0)
+                        {
+                            fs.Write(serverFile.Hash, 0, serverFile.Hash.Length);
+                        }
+                    }
+
+                    resumeFrom?.Remove(key);
+                    completedFiles.Add(serverFile.FileName);
+                    continue;
+                }
+
+                var expectedOffset = serverFile.ChunkOffset;
+                Directory.CreateDirectory(Path.GetDirectoryName(fullName));
+                var skipCurrentChunk = false;
+
+                using (var fs = new FileStream(partName, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+                {
+                    // Если offset не совпал, этот чанк применять нельзя: сбрасываем .ocpart и
+                    // запрашиваем следующий пакет заново с offset=0.
+                    if (expectedOffset > 0 && fs.Length != expectedOffset)
+                    {
+                        fs.SetLength(0);
+                        resumeFrom?.Remove(key);
+                        skipCurrentChunk = true;
+                    }
+                    else if (expectedOffset == 0 && fs.Length != 0)
+                    {
+                        fs.SetLength(0);
+                    }
+
+                    if (skipCurrentChunk)
+                    {
+                        continue;
+                    }
+
+                    fs.Position = expectedOffset;
                     if (serverFile.Hash.Length > 0)
                     {
                         fs.Write(serverFile.Hash, 0, serverFile.Hash.Length);
                     }
+                    fs.Flush();
+
+                    if (fs.Length < serverFile.ChunkTotalSize)
+                    {
+                        resumeFrom[key] = fs.Length;
+                        continue;
+                    }
                 }
+                if (File.Exists(fullName))
+                {
+                    File.Delete(fullName);
+                }
+                File.Move(partName, fullName);
+                resumeFrom?.Remove(key);
+                completedFiles.Add(serverFile.FileName);
             }
+
+            return completedFiles;
+        }
+
+        private static string GetPartFileName(string fullName)
+        {
+            return fullName + ".ocpart";
         }
 
         private static int nnnn = 0;

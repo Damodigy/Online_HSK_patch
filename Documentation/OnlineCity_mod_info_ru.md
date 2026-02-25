@@ -211,6 +211,7 @@ OnlineCity - представляет из себя модуль сетевой 
   "Port": 19019,
   "Description": null,
   "IsModsWhitelisted": false,
+  "MaxFileSyncPacketSizeMb": 20,
   "DisableDevMode": false,
   "MinutesIntervalBetweenPVP": 0,
   "GeneralSettings": {

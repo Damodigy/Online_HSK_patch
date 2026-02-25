@@ -89,7 +89,7 @@ namespace RimWorldOnlineCity
 
 		private void DoPawnsToxicDamage(Map map)
 		{
-			List<Pawn> allPawnsSpawned = map.mapPawns.AllPawnsSpawned;
+			var allPawnsSpawned = map.mapPawns.AllPawnsSpawned;
 			for (int i = 0; i < allPawnsSpawned.Count; i++)
 			{
 				DoPawnToxicDamage(allPawnsSpawned[i]);

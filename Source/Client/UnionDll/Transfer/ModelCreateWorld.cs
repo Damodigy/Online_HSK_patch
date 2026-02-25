@@ -18,5 +18,7 @@ namespace Transfer
         public float PlanetCoverage { get; set; }
 
         public List<WorldObjectEntry> WObjects { get; set; }
+        public List<WorldObjectOnline> WObjectOnlineList { get; set; }
+        public List<FactionOnline> FactionOnlineList { get; set; }
     }
 }

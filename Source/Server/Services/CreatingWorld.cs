@@ -51,6 +51,8 @@ namespace ServerOnlineCity.Services
                 data.WorldPlanetCoverage = packet.PlanetCoverage;
                 data.WorldObjects = packet.WObjects ?? new List<WorldObjectEntry>();
                 data.WorldObjectsDeleted = new List<WorldObjectEntry>();
+                data.WorldObjectOnlineList = packet.WObjectOnlineList ?? new List<WorldObjectOnline>();
+                data.FactionOnlineList = packet.FactionOnlineList ?? new List<FactionOnline>();
                 data.Orders = new List<TradeOrder>();
                 data.OrdersPlaceServerIdByTile = new Dictionary<int, long>();
                 Repository.Get.ChangeData = true;
