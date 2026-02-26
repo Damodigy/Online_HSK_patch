@@ -1,0 +1,102 @@
+{
+  "ServerName": "OnlineCity HSK 1.5",
+  "SaveInterval": 10000,
+  "Port": 19019,
+  "Description": "RimWorld 1.5 + Hardcore SK profile",
+  "IsModsWhitelisted": true,
+  "MaxFileSyncPacketSizeMb": 20,
+  "DisableDevMode": true,
+  "SecretKey": null,
+  "PlayerNeedApprove": false,
+  "PlayerNeedApproveInDiscord": false,
+  "MinutesIntervalBetweenPVP": 0,
+  "GeneralSettings": {
+    "StorytellerDef": "",
+    "Difficulty": "",
+    "EnablePVP": false,
+    "DisableGameSettings": true,
+    "IncidentEnable": true,
+    "IncidentCountInOffline": 2,
+    "IncidentMaxMult": 10,
+    "IncidentTickDelayBetween": 60000,
+    "IncidentCostPrecent": 100,
+    "IncidentPowerPrecent": 100,
+    "IncidentCoolDownPercent": 100,
+    "IncidentAlarmInHours": 10,
+    "EquableWorldObjects": false,
+    "ExchengeEnable": true,
+    "ScenarioAviable": true,
+    "ExchengePrecentWealthForIncident": 1000,
+    "ExchengePrecentCommissionConvertToCashlessCurrency": 50,
+    "ExchengeCostCargoDelivery": 1000,
+    "ExchengeAddPrecentCostForFastCargoDelivery": 100,
+    "ExchengeForbiddenDefNames": null,
+    "StartGameYear": -1,
+    "EntranceWarning": null,
+    "EntranceWarningRussian": null,
+    "ColonyScreenEnable": true,
+    "ColonyScreenHighQuality": true,
+    "ColonyScreenDelayDays": 1
+  },
+  "EqualFiles": [
+    {
+      "FolderType": 2,
+      "ServerPath": "Mods",
+      "NeedReplace": true,
+      "IgnoreTag": null,
+      "XMLFileName": null,
+      "IgnoreFile": [
+        ".cs",
+        ".csproj",
+        ".sln",
+        ".gitignore",
+        ".gitattributes",
+        ".DS_Store",
+        "resources.assets.resS"
+      ],
+      "IgnoreFolder": [
+        "bin",
+        "obj",
+        ".vs",
+        "packages"
+      ]
+    },
+    {
+      "FolderType": 0,
+      "ServerPath": "Config",
+      "NeedReplace": true,
+      "IgnoreTag": null,
+      "XMLFileName": null,
+      "IgnoreFile": [
+        "KeyPrefs.xml",
+        "Knowledge.xml",
+        "LastPlayedVersion.txt",
+        "Prefs.xml",
+        ".DS_Store",
+        "Mod_2664723367_PerformanceOptimizerMod.xml",
+        "Mod_Dubs Mint Menus_DubsMintMenusMod.xml",
+        "Mod_Dubs Performance Analyzer_Modbase.xml",
+        "Mod_FrameRateControl_FrameRateControlMod.xml",
+        "Mod_Camera+_CameraPlusMain.xml",
+        "Mod_RimThemes_RimThemes.xml"
+      ],
+      "IgnoreFolder": [
+        "RimHUD"
+      ]
+    },
+    {
+      "FolderType": 0,
+      "ServerPath": "Config",
+      "NeedReplace": true,
+      "IgnoreTag": [
+        "OnlineCity"
+      ],
+      "XMLFileName": "..\\HugsLib\\ModSettings.xml",
+      "IgnoreFile": null,
+      "IgnoreFolder": null
+    }
+  ],
+  "ProtectingNovice": true,
+  "DeleteAbandonedSettlements": false,
+  "ColonyScreenFolderMaxMb": 1024
+}
