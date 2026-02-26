@@ -102,7 +102,7 @@ namespace ServerOnlineCity
                             /* Content-Disposition: form-data; name="avatar"; filename="XGQKemif8eU.jpg"
                              * Content-Type: image/jpeg
                              * 
-                             * ����
+                             * <binary payload>
                              */
                             var item = listBoundary[i];
                             var itemi = item.IndexOf("name=\"");

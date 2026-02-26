@@ -243,7 +243,7 @@ namespace OCUnion.Common
                 }
             }
             var xb = Encoding.UTF8.GetBytes(XML);
-            //if (XML.StartsWith("п»ї")) XML = XML.Substring(3);
+            //if (XML.StartsWith("\uFEFF")) XML = XML.Substring(1);
             if (xb.Length > 3 && xb[0] == 0xEF && xb[1] == 0xBB && xb[2] == 0xBF)
             {
                 var xb0 = new byte[xb.Length - 3];

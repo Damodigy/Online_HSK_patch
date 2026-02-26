@@ -122,9 +122,8 @@ namespace RimWorldOnlineCity
 
                         item = new ListableOption("Save".Translate(), delegate
                         {
-                            Loger.Log("Client MainMenu Save");
-                            SessionClientController.SaveGameNowInEvent();
-                            Find.WindowStack.Add(new Dialog_Input("OCity_MainMenu_Saved".Translate(), "", true));
+                            Loger.Log("Client MainMenu Save dialog");
+                            Find.WindowStack.Add(new Dialog_ServerSaves());
                         }, null);
                         optList.Add(item);
 

@@ -70,6 +70,30 @@ namespace RimWorldOnlineCity
         public byte[] SaveFileData;
 
         public bool SingleSave;
+        /// <summary>
+        /// Выбранный ручной слот серверного сохранения.
+        /// </summary>
+        public int SaveSlotNumber = 1;
+        /// <summary>
+        /// Выбранный автослот серверного сохранения.
+        /// </summary>
+        public int AutoSaveSlotNumber = 1;
+        /// <summary>
+        /// Истина, если текущий запрос на сохранение относится к автослотам.
+        /// </summary>
+        public bool PendingSaveIsAuto = false;
+        /// <summary>
+        /// Номер слота, закрепленный за текущим пакетом SaveFileData.
+        /// </summary>
+        public int PendingSaveSlotNumber = 1;
+        /// <summary>
+        /// Максимальное число ручных слотов на сервере.
+        /// </summary>
+        public int SaveSlotsCount = 1;
+        /// <summary>
+        /// Максимальное число автослотов на сервере.
+        /// </summary>
+        public int AutoSaveSlotsCount = 0;
 
         public long LastSaveTick;
 

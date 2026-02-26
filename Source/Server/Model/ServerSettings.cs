@@ -13,6 +13,14 @@ namespace ServerCore.Model
         public string ServerName { get; set; } = "Another OnlineCity Server";
         public int SaveInterval { get; set; } = 10000;
         public int Port { get; set; } = SessionClient.DefaultPort;
+        /// <summary>
+        /// Количество серверных слотов сохранения на одного игрока.
+        /// </summary>
+        public int CountSaveDataPlayer { get; set; } = 3;
+        /// <summary>
+        /// Количество серверных автослотов сохранения на одного игрока.
+        /// </summary>
+        public int CountAutoSaveDataPlayer { get; set; } = 3;
 
         /// <summary>
         /// RPG: Legend of the server, Краткое описание сервера
@@ -158,6 +166,16 @@ namespace ServerCore.Model
             if (obj.MaxFileSyncPacketSizeMb < 1 || obj.MaxFileSyncPacketSizeMb > 256)
             {
                 errors.Add(new ValidationResult("MaxFileSyncPacketSizeMb must be between 1 and 256"));
+            }
+
+            if (obj.CountSaveDataPlayer < 1 || obj.CountSaveDataPlayer > 20)
+            {
+                errors.Add(new ValidationResult("CountSaveDataPlayer must be between 1 and 20"));
+            }
+
+            if (obj.CountAutoSaveDataPlayer < 0 || obj.CountAutoSaveDataPlayer > 50)
+            {
+                errors.Add(new ValidationResult("CountAutoSaveDataPlayer must be between 0 and 50"));
             }
 
             //if (obj.IsModsWhitelisted)

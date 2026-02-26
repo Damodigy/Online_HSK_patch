@@ -56,6 +56,7 @@
   </Choose>
   <ItemGroup>
     <Compile Include="OnlineCityAPIClientTests.cs" />
+    <Compile Include="RepositorySaveDataTests.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -65,6 +66,10 @@
     <ProjectReference Include="..\Server\Server.csproj">
       <Project>{ADABF786-DF92-419B-A4F7-94B2576425B7}</Project>
       <Name>Server</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\Client\UnionDll\UnionDll.csproj">
+      <Project>{9513586E-B487-4BEE-A3FB-0D277D4E5B5C}</Project>
+      <Name>UnionDll</Name>
     </ProjectReference>
   </ItemGroup>
   <Choose>

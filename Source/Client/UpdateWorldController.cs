@@ -786,6 +786,24 @@ namespace RimWorldOnlineCity
                 err += "8 ";
                 worldObject = GetOtherByServerId(worldObjectEntry.PlaceServerId, allWorldObjectsByID) as CaravanOnline;
 
+                //Если тип объекта на сервере сменился (например, караван -> база), пересоздаем world object с нужным классом.
+                if (worldObject != null)
+                {
+                    var mustBeBase = worldObjectEntry.Type == WorldObjectEntryType.Base;
+                    var isBaseNow = worldObject is BaseOnline;
+                    if (mustBeBase != isBaseNow)
+                    {
+                        Loger.Log("Replace WO " + worldObjectEntry.PlaceServerId
+                            + " type " + worldObject.GetType().Name + " -> "
+                            + (mustBeBase ? nameof(BaseOnline) : nameof(CaravanOnline)));
+                        allWorldObjectsByID.Remove(worldObject.ID);
+                        allWorldObjects.Remove(worldObject);
+                        Find.WorldObjects.Remove(worldObject);
+                        ConverterServerId.Remove(worldObjectEntry.PlaceServerId);
+                        worldObject = null;
+                    }
+                }
+
                 err += "9 ";
                 //если тут база другого игрока, то удаление всех кто занимает этот тайл, кроме караванов (удаление новых НПЦ и событий с занятых тайлов)
                 if (worldObjectEntry.Type == WorldObjectEntryType.Base)
@@ -819,9 +837,9 @@ namespace RimWorldOnlineCity
                     //DrawTerritory(worldObject.Tile);
                     Find.WorldObjects.Add(worldObject);
                     err += "16 ";
-                    ConverterServerId.Add(worldObjectEntry.PlaceServerId, worldObject.ID);
-                    allWorldObjectsByID.Add(worldObject.ID, worldObject);
-                    allWorldObjects.Add(worldObject);
+                    ConverterServerId[worldObjectEntry.PlaceServerId] = worldObject.ID;
+                    allWorldObjectsByID[worldObject.ID] = worldObject;
+                    if (!allWorldObjects.Contains(worldObject)) allWorldObjects.Add(worldObject);
                     Loger.Log("Add " + worldObjectEntry.PlaceServerId + " " + worldObjectEntry.Name + " " + worldObjectEntry.LoginOwner);
                     err += "17 ";
                 }

@@ -1288,18 +1288,19 @@ namespace RimWorldOnlineCity
         }
 
         /// <summary>
-        /// Изменяем скрость пешек от 1 до 450 (смотри Pawn.TicksPerMove)
+        /// Изменяем скорость пешек от 1 до 450 (см. Pawn.TicksPerMove)
         /// </summary>
         /// <param name="pawn"></param>
         /// <param name="speed"></param>
-        public void ControlPawnMoveSpeed(Pawn pawn, ref int speed)
+        public void ControlPawnMoveSpeed(Pawn pawn, ref float speed)
         {
             if (!HostPawnMoveSpeedActive) return;
 
             if (!AttackingPawnDic.ContainsKey(pawn.thingIDNumber))
             {
-                speed = (int)(speed / HostPawnMoveSpeed);
-                if (speed > 450) speed = 450;
+                speed /= HostPawnMoveSpeed;
+                if (speed < 1f) speed = 1f;
+                if (speed > 450f) speed = 450f;
             }
         }
 

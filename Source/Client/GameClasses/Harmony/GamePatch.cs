@@ -687,5 +687,248 @@ namespace RimWorldOnlineCity.GameClasses.Harmony
         }
     }    
 
+    /// <summary>
+    /// Совместимость с модами производительности/камеры:
+    /// иногда после загрузки сейва падает DrawDynamicThings, из-за чего карта уходит в "черный экран".
+    /// Ловим исключение, пересобираем менеджеры отрисовки и не даем кадру полностью сорваться.
+    /// </summary>
+    [HarmonyPatch(typeof(DynamicDrawManager))]
+    [HarmonyPatch("DrawDynamicThings")]
+    internal static class DynamicDrawManager_DrawDynamicThings_RecoveryPatch
+    {
+        [HarmonyFinalizer]
+        public static Exception Finalizer(Exception __exception, DynamicDrawManager __instance)
+        {
+            Map map = null;
+            if (__instance != null)
+            {
+                try
+                {
+                    map = Traverse.Create(__instance).Field("map").GetValue<Map>();
+                }
+                catch
+                {
+                    map = null;
+                }
+            }
+
+            return MapRenderRecoveryHelper.Handle(__exception, "DrawDynamicThings", map, null);
+        }
+    }
+
+    /// <summary>
+    /// Падение MapMeshDrawerUpdate_First() ломает отрисовку всей карты (черный экран при живой симуляции).
+    /// Ловим исключение и принудительно пересоздаем mapDrawer/dynamicDrawManager.
+    /// </summary>
+    [HarmonyPatch(typeof(MapDrawer))]
+    [HarmonyPatch("MapMeshDrawerUpdate_First")]
+    internal static class MapDrawer_MapMeshDrawerUpdate_First_RecoveryPatch
+    {
+        [HarmonyFinalizer]
+        public static Exception Finalizer(Exception __exception, MapDrawer __instance)
+        {
+            return MapRenderRecoveryHelper.Handle(__exception, "MapMeshDrawerUpdate_First", null, __instance);
+        }
+    }
+
+    /// <summary>
+    /// После загрузки сейва часть модов может ломать DrawMapMesh(), из-за чего карта остается черной,
+    /// хотя симуляция продолжает работать. Ловим исключение и пересобираем рендер карты.
+    /// </summary>
+    [HarmonyPatch(typeof(MapDrawer))]
+    [HarmonyPatch("DrawMapMesh")]
+    internal static class MapDrawer_DrawMapMesh_RecoveryPatch
+    {
+        [HarmonyFinalizer]
+        public static Exception Finalizer(Exception __exception, MapDrawer __instance)
+        {
+            return MapRenderRecoveryHelper.Handle(__exception, "DrawMapMesh", null, __instance);
+        }
+    }
+
+    /// <summary>
+    /// Резервный перехват: если исключение всплывает из MapUpdate, восстанавливаем отрисовку и не роняем кадр.
+    /// </summary>
+    [HarmonyPatch(typeof(Map))]
+    [HarmonyPatch("MapUpdate")]
+    internal static class Map_MapUpdate_RecoveryPatch
+    {
+        [HarmonyFinalizer]
+        public static Exception Finalizer(Exception __exception, Map __instance)
+        {
+            return MapRenderRecoveryHelper.Handle(__exception, "MapUpdate", __instance, __instance?.mapDrawer);
+        }
+    }
+
+    /// <summary>
+    /// Унифицированное восстановление карты после сбоев рендера.
+    /// </summary>
+    internal static class MapRenderRecoveryHelper
+    {
+        private static DateTime LastRecoverAt = DateTime.MinValue;
+        private static DateTime LastLogAt = DateTime.MinValue;
+
+        public static Exception Handle(Exception exception, string source, Map map = null, MapDrawer mapDrawer = null)
+        {
+            if (exception == null) return null;
+
+            // Не маскируем ошибки, не связанные с отрисовкой карты.
+            if (!IsRenderException(exception, source))
+            {
+                return exception;
+            }
+
+            var now = DateTime.UtcNow;
+            if ((now - LastLogAt).TotalSeconds > 5)
+            {
+                LastLogAt = now;
+                Loger.Log($"Client {source}: подавлено исключение рендера {exception.Message}"
+                    , Loger.LogLevel.WARNING);
+            }
+
+            // Защита от частых повторных восстановлений в одном и том же кадре.
+            if ((now - LastRecoverAt).TotalSeconds <= 2) return null;
+            LastRecoverAt = now;
+
+            try
+            {
+                map = ResolveMap(map, mapDrawer);
+                if (map == null) return null;
+
+                map.dynamicDrawManager = new DynamicDrawManager(map);
+                var allThings = map.listerThings?.AllThings;
+                if (allThings != null)
+                {
+                    for (int i = 0; i < allThings.Count; i++)
+                    {
+                        var thing = allThings[i];
+                        if (thing == null) continue;
+                        try
+                        {
+                            map.dynamicDrawManager.RegisterDrawable(thing);
+                        }
+                        catch
+                        {
+                            // Поврежденные объекты пропускаем, чтобы не блокировать восстановление всей карты.
+                        }
+                    }
+                }
+
+                map.mapDrawer = new MapDrawer(map);
+                TryRegenerateMap(map);
+
+                if (Current.Game != null) Current.Game.CurrentMap = map;
+                TryJumpToMap(map);
+
+                Loger.Log($"Client {source}: выполнено восстановление отрисовки карты"
+                    , Loger.LogLevel.WARNING);
+            }
+            catch (Exception ex)
+            {
+                Loger.Log($"Client {source}: ошибка восстановления {ex}"
+                    , Loger.LogLevel.WARNING);
+            }
+
+            return null;
+        }
+
+        private static void TryRegenerateMap(Map map)
+        {
+            if (map?.mapDrawer == null) return;
+
+            // Некоторые моды оставляют mapDrawer в состоянии, когда WholeMapChanged кидает NRE.
+            // Поэтому используем только безопасные варианты без WholeMapChanged.
+            try
+            {
+                map.mapDrawer.RegenerateEverythingNow();
+                return;
+            }
+            catch
+            {
+                // continue
+            }
+
+            try
+            {
+                map.mapDrawer = new MapDrawer(map);
+                map.mapDrawer.RegenerateEverythingNow();
+            }
+            catch
+            {
+                // на этом этапе просто сохраняем живой кадр и не роняем игру
+            }
+        }
+
+        private static void TryJumpToMap(Map map)
+        {
+            if (map == null) return;
+            try
+            {
+                CameraJumper.TryJump(map.Center, map);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static bool IsRenderException(Exception exception, string source)
+        {
+            if (exception == null) return false;
+
+            // В узкоспециализированных методах отрисовки любое исключение считаем рендерным.
+            if (source == "DrawMapMesh"
+                || source == "MapMeshDrawerUpdate_First"
+                || source == "DrawDynamicThings")
+            {
+                return true;
+            }
+
+            var stack = exception.StackTrace;
+            if (string.IsNullOrEmpty(stack))
+            {
+                return false;
+            }
+            return stack.Contains("MapDrawer.")
+                || stack.Contains("DrawMapMesh")
+                || stack.Contains("MapMeshDrawerUpdate_First")
+                || stack.Contains("DynamicDrawManager");
+        }
+
+        private static Map ResolveMap(Map map, MapDrawer mapDrawer)
+        {
+            if (map != null) return map;
+
+            if (mapDrawer != null)
+            {
+                try
+                {
+                    map = Traverse.Create(mapDrawer).Field("map").GetValue<Map>();
+                }
+                catch
+                {
+                    map = null;
+                }
+            }
+            if (map != null) return map;
+
+            var game = Current.Game;
+            if (game?.Maps != null && mapDrawer != null)
+            {
+                for (int i = 0; i < game.Maps.Count; i++)
+                {
+                    var gameMap = game.Maps[i];
+                    if (gameMap == null) continue;
+                    if (gameMap.mapDrawer == mapDrawer) return gameMap;
+                }
+            }
+
+            if (Find.CurrentMap != null) return Find.CurrentMap;
+            if (game?.CurrentMap != null) return game.CurrentMap;
+            if (game?.Maps != null && game.Maps.Count > 0) return game.Maps[0];
+            return null;
+        }
+    }
+
     /// ////////////////////////////////////////////////////////////
 }

@@ -20,6 +20,14 @@ namespace Transfer
         public bool IsWorldObjectsSync { get; set; }
         public byte[] SaveFileData { get; set; }
         public bool SingleSave { get; set; }
+        /// <summary>
+        /// Номер серверного слота сохранения (от 1).
+        /// </summary>
+        public int SaveNumber { get; set; } = 1;
+        /// <summary>
+        /// Истина, если сохранение относится к автослотам.
+        /// </summary>
+        public bool SaveIsAuto { get; set; }
         public long LastTick { get; set; }
         public PlayerGameProgress GameProgress { get; set; }
         public List<string> GetPlayersInfo { get; set; }

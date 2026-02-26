@@ -32,6 +32,26 @@ namespace Transfer
         public DateTime TimeChangeEnablePVP { get; set; }
         public bool ProtectingNovice { get; set; }
         public ServerGeneralSettings GeneralSettings { get; set; }
+        /// <summary>
+        /// Максимальное число серверных слотов сохранения для игрока.
+        /// </summary>
+        public int SaveSlotsCount { get; set; } = 1;
+        /// <summary>
+        /// Количество ручных слотов сохранения (N).
+        /// </summary>
+        public int ManualSaveSlotsCount { get; set; } = 1;
+        /// <summary>
+        /// Количество автослотов сохранения (M).
+        /// </summary>
+        public int AutoSaveSlotsCount { get; set; } = 0;
+        /// <summary>
+        /// Активный серверный слот сохранения (от 1).
+        /// </summary>
+        public int ActiveSaveSlot { get; set; } = 1;
+        /// <summary>
+        /// Активный автослот сохранения (от 1).
+        /// </summary>
+        public int ActiveAutoSaveSlot { get; set; } = 1;
 
         public DateTime ServerTime { get; set; }
 

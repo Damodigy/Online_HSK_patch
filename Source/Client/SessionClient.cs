@@ -31,6 +31,56 @@ namespace RimWorldOnlineCity
             return stat;
         }
 
+        public ModelPlayerSaveResponse GetPlayerSaves()
+        {
+            var packet = new ModelPlayerSaveRequest()
+            {
+                RequestType = PlayerSaveRequestType.GetList
+            };
+
+            var stat = TransObject<ModelPlayerSaveResponse>(packet, (int)PackageType.Request51Free, (int)PackageType.Response52Free);
+            if (stat != null && stat.Status != 0)
+            {
+                ErrorMessage = stat.Message;
+            }
+            return stat;
+        }
+
+        public ModelPlayerSaveResponse RenamePlayerSave(int slot, bool isAuto, string name)
+        {
+            var packet = new ModelPlayerSaveRequest()
+            {
+                RequestType = PlayerSaveRequestType.Rename,
+                Slot = slot,
+                IsAuto = isAuto,
+                Name = name
+            };
+
+            var stat = TransObject<ModelPlayerSaveResponse>(packet, (int)PackageType.Request51Free, (int)PackageType.Response52Free);
+            if (stat != null && stat.Status != 0)
+            {
+                ErrorMessage = stat.Message;
+            }
+            return stat;
+        }
+
+        public ModelPlayerSaveResponse SetActivePlayerSave(int slot, bool isAuto)
+        {
+            var packet = new ModelPlayerSaveRequest()
+            {
+                RequestType = PlayerSaveRequestType.SetActive,
+                Slot = slot,
+                IsAuto = isAuto
+            };
+
+            var stat = TransObject<ModelPlayerSaveResponse>(packet, (int)PackageType.Request51Free, (int)PackageType.Response52Free);
+            if (stat != null && stat.Status != 0)
+            {
+                ErrorMessage = stat.Message;
+            }
+            return stat;
+        }
+
         public bool CreateWorld(ModelCreateWorld packet)
         {
             Loger.Log("Client CreateWorld");

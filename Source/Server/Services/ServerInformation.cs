@@ -63,7 +63,7 @@ namespace ServerOnlineCity.Services
                                 }
                             }
 
-                            result.SaveFileData = Repository.GetSaveData.LoadPlayerData(context.Player.Public.Login, 1);
+                            result.SaveFileData = Repository.GetSaveData.LoadActivePlayerData(context.Player.Public.Login);
 
                             if (result.SaveFileData != null)
                             {
@@ -166,6 +166,11 @@ namespace ServerOnlineCity.Services
                     TimeChangeEnablePVP = player.TimeChangeEnablePVP,
                     GeneralSettings = ServerManager.ServerSettings.GeneralSettings,
                     ProtectingNovice = ServerManager.ServerSettings.ProtectingNovice,
+                    SaveSlotsCount = Repository.GetSaveData.CountSaveDataPlayer,
+                    ManualSaveSlotsCount = Repository.GetSaveData.CountSaveDataPlayer,
+                    AutoSaveSlotsCount = Repository.GetSaveData.CountAutoSaveDataPlayer,
+                    ActiveSaveSlot = Repository.GetSaveData.GetActiveSaveSlot(player.Public.Login),
+                    ActiveAutoSaveSlot = Repository.GetSaveData.GetActiveAutoSaveSlot(player.Public.Login),
                 };
 
             return result;

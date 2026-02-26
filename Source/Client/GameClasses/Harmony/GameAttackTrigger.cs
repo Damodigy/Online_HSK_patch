@@ -298,7 +298,7 @@ namespace RimWorldOnlineCity.GameClasses
     public static class Pawn_TicksPerMove
     {
         [HarmonyPostfix]
-        public static void Postfix(Pawn __instance, ref int __result)
+        public static void Postfix(Pawn __instance, ref float __result)
         {
             if (GameAttackTrigger_Patch.ActiveAttackHost.Count == 0) return;
 

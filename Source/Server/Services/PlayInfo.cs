@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Model;
@@ -61,7 +61,12 @@ namespace ServerOnlineCity.Services
                 }
                 if (packet.SaveFileData != null && packet.SaveFileData.Length > 0)
                 {
-                    Repository.GetSaveData.SavePlayerData(context.Player.Public.Login, packet.SaveFileData, packet.SingleSave);
+                    Repository.GetSaveData.SavePlayerData(
+                        context.Player.Public.Login,
+                        packet.SaveFileData,
+                        packet.SingleSave,
+                        packet.SaveNumber,
+                        packet.SaveIsAuto);
                     context.Player.Public.LastSaveTime = timeNow;
 
                     //Действия при сохранении, оно происодит только здесь!
@@ -133,6 +138,11 @@ namespace ServerOnlineCity.Services
                         var WO = data.WorldObjects.FirstOrDefault(p => p.PlaceServerId == sid);
                         if (WO != null)
                         {
+                            if (WO.Type != pWOs[i].Type)
+                            {
+                                WO.UpdateTime = timeNow;
+                                WO.Type = pWOs[i].Type;
+                            }
                             //данный объект уже есть в базу обновляем по нему информкацию
                             if (WO.Name != pWOs[i].Name)
                             {
@@ -509,3 +519,4 @@ namespace ServerOnlineCity.Services
         }
     }
 }
+

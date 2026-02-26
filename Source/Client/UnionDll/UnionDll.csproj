@@ -129,6 +129,7 @@
     <Compile Include="Transfer\ModelOrderBuy.cs" />
     <Compile Include="Transfer\GZip.SharpZipLib.cs" />
     <Compile Include="Transfer\ModelOrderLoad.cs" />
+    <Compile Include="Transfer\ModelPlayerSaves.cs" />
     <Compile Include="Transfer\Model\AttackInitiatorFromSrv.cs" />
     <Compile Include="Transfer\Model\AttackInitiatorToSrv.cs" />
     <Compile Include="Transfer\Model\AttackHostFromSrv.cs" />

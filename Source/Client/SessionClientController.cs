@@ -1,4 +1,4 @@
-using Model;
+﻿using Model;
 using OCUnion;
 using OCUnion.Common;
 using OCUnion.Transfer;
@@ -15,6 +15,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -159,6 +160,9 @@ namespace RimWorldOnlineCity
         private const int NetworkDebugEventsMax = 12;
         private static readonly object NetworkDebugLock = new object();
         private static readonly Queue<string> NetworkDebugEvents = new Queue<string>();
+        private const int SaveDebugEventsMax = 5;
+        private static readonly object SaveDebugLock = new object();
+        private static readonly Queue<string> SaveDebugEvents = new Queue<string>();
         private static bool NetworkDebugEnabled = false;
         private static DateTime LastUpdateWorldDebugAt = DateTime.MinValue;
         private static string LastUpdateWorldDebugSummary = "-";
@@ -169,6 +173,16 @@ namespace RimWorldOnlineCity
         private static int SaveUploadRetryCount = 0;
         private static string LastSaveUploadError = null;
         private static bool SaveInMemoryEnabled = true;
+        private static string LastSaveQueuedFingerprint = null;
+        private static string LastSaveUploadedFingerprint = null;
+        private static string LastSaveQueuedTargetKey = null;
+        private static string LastSaveUploadedTargetKey = null;
+        private static bool SkipRestoreMapViewAfterLoadOnce = false;
+        /// <summary>
+        /// Флаг одноразового пропуска GameExit.BeforeExit при служебной загрузке выбранного серверного сейва.
+        /// Нужен, чтобы переход в главное меню не делал автосейв старого мира и не разрывал уже восстановленное соединение.
+        /// </summary>
+        private static bool SkipBeforeExitForServerReloadOnce = false;
 
         public static string NetworkDebugHotkey => "Ctrl+Alt+Shift+D";
         public static bool IsNetworkDebugEnabled => NetworkDebugEnabled;
@@ -176,7 +190,7 @@ namespace RimWorldOnlineCity
         public static bool ToggleNetworkDebugMode()
         {
             NetworkDebugEnabled = !NetworkDebugEnabled;
-            AddNetworkDebugEvent("Debug mode " + (NetworkDebugEnabled ? "enabled" : "disabled"));
+            AddNetworkDebugEvent("Режим отладки " + (NetworkDebugEnabled ? "включен" : "выключен"));
             UpdateGlobalTooltip();
             return NetworkDebugEnabled;
         }
@@ -204,6 +218,45 @@ namespace RimWorldOnlineCity
             }
         }
 
+        private static void AddSaveDebugEvent(string status, long bytes = 0, string details = null)
+        {
+            if (string.IsNullOrWhiteSpace(status)) return;
+            var line = DateTime.UtcNow.ToString("HH:mm:ss") + " " + status;
+            if (bytes > 0)
+            {
+                line += " " + FormatBytes(bytes);
+            }
+            if (!string.IsNullOrWhiteSpace(details))
+            {
+                line += " " + details;
+            }
+            lock (SaveDebugLock)
+            {
+                SaveDebugEvents.Enqueue(line);
+                while (SaveDebugEvents.Count > SaveDebugEventsMax)
+                {
+                    SaveDebugEvents.Dequeue();
+                }
+            }
+        }
+
+        private static List<string> GetRecentSaveDebugEvents(int count)
+        {
+            if (count <= 0) return new List<string>();
+            lock (SaveDebugLock)
+            {
+                return SaveDebugEvents.Reverse().Take(count).ToList();
+            }
+        }
+
+        private static string CropDebugMessage(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return null;
+            var text = message.Replace(Environment.NewLine, " ").Trim();
+            if (text.Length > 64) text = text.Substring(0, 64) + "...";
+            return text;
+        }
+
         private static string FormatBytes(long bytes)
         {
             if (bytes <= 0) return "0B";
@@ -212,46 +265,173 @@ namespace RimWorldOnlineCity
             return (bytes / (1024L * 1024L)) + "MB";
         }
 
-        private static void QueueSaveForUpload(byte[] content, bool single, string source)
+        private static string GetSaveFingerprint(byte[] content)
+        {
+            if (content == null || content.Length == 0) return "0";
+            using (var sha1 = SHA1.Create())
+            {
+                return content.Length + ":" + BitConverter.ToString(sha1.ComputeHash(content)).Replace("-", string.Empty);
+            }
+        }
+
+        private static int NormalizeQueuedSaveSlot(bool isAuto, int slot)
+        {
+            if (Data == null) return isAuto ? 0 : 1;
+
+            if (isAuto)
+            {
+                var maxAutoSlots = Math.Max(0, Data.AutoSaveSlotsCount);
+                if (maxAutoSlots == 0) return 0;
+                if (slot == 0) return 0; // 0 = фоновая ротация автослотов на сервере
+                if (slot < 1) return 1;
+                if (slot > maxAutoSlots) return maxAutoSlots;
+                return slot;
+            }
+
+            var maxManualSlots = Math.Max(1, Data.SaveSlotsCount);
+            if (slot < 1) return 1;
+            if (slot > maxManualSlots) return maxManualSlots;
+            return slot;
+        }
+
+        private static string GetSaveTargetKey(bool isAuto, int slot)
+        {
+            var safeSlot = NormalizeQueuedSaveSlot(isAuto, slot);
+            var slotPart = safeSlot == 0 ? "auto" : safeSlot.ToString();
+            return (isAuto ? "A:" : "M:") + slotPart;
+        }
+
+        private static string GetSaveTargetText(bool isAuto, int slot)
+        {
+            var safeSlot = NormalizeQueuedSaveSlot(isAuto, slot);
+            if (isAuto)
+            {
+                return safeSlot == 0 ? "автослот:авто" : "автослот:" + safeSlot;
+            }
+
+            return "слот:" + (safeSlot < 1 ? 1 : safeSlot);
+        }
+
+        private static string GetSaveTargetTextFromKey(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return "слот:1";
+            if (key.StartsWith("A:", StringComparison.Ordinal))
+            {
+                var autoSlot = key.Length > 2 ? key.Substring(2) : "auto";
+                return autoSlot == "auto" ? "автослот:авто" : "автослот:" + autoSlot;
+            }
+
+            var manualSlot = key.StartsWith("M:", StringComparison.Ordinal) && key.Length > 2 ? key.Substring(2) : "1";
+            return "слот:" + manualSlot;
+        }
+
+        private static void QueueSaveForUpload(byte[] content, bool single, string source, bool saveIsAuto, int saveSlot)
         {
             if (content == null || content.Length <= 1024)
             {
-                LastSaveUploadError = "empty save data";
-                Loger.Log("Client QueueSaveForUpload skip (empty save data)");
+                LastSaveUploadError = "пустые данные сейва";
+                Loger.Log("Client QueueSaveForUpload пропуск (пустые данные сейва)");
+                AddSaveDebugEvent("пропуск-пусто", 0, source);
+                return;
+            }
+            if (Data == null)
+            {
+                LastSaveUploadError = "данные клиента недоступны";
+                Loger.Log("Client QueueSaveForUpload пропуск (данные клиента недоступны)");
+                AddSaveDebugEvent("пропуск-нет-данных", 0, source);
+                return;
+            }
+
+            if (saveIsAuto && Data.AutoSaveSlotsCount <= 0)
+            {
+                LastSaveUploadError = "автослоты отключены на сервере";
+                Loger.Log("Client QueueSaveForUpload пропуск (автослоты отключены)");
+                AddSaveDebugEvent("пропуск-нет-автослотов", 0, source);
+                return;
+            }
+
+            var fingerprint = GetSaveFingerprint(content);
+            var normalizedSlot = NormalizeQueuedSaveSlot(saveIsAuto, saveSlot);
+            var targetKey = GetSaveTargetKey(saveIsAuto, normalizedSlot);
+            var targetText = GetSaveTargetText(saveIsAuto, normalizedSlot);
+
+            if (Data.SaveFileData != null
+                && Data.SaveFileData.Length > 0
+                && string.Equals(LastSaveQueuedFingerprint, fingerprint, StringComparison.Ordinal)
+                && string.Equals(LastSaveQueuedTargetKey, targetKey, StringComparison.Ordinal))
+            {
+                AddSaveDebugEvent("пропуск-дубль-в-очереди", content.LongLength, source);
+                if (NetworkDebugEnabled)
+                {
+                    AddNetworkDebugEvent("Сейв пропущен: дубль в очереди " + source);
+                }
+                return;
+            }
+
+            if ((Data.SaveFileData == null || Data.SaveFileData.Length == 0)
+                && string.Equals(LastSaveUploadedFingerprint, fingerprint, StringComparison.Ordinal)
+                && string.Equals(LastSaveUploadedTargetKey, targetKey, StringComparison.Ordinal))
+            {
+                AddSaveDebugEvent("пропуск-без-изменений", content.LongLength, source);
+                if (NetworkDebugEnabled)
+                {
+                    AddNetworkDebugEvent("Сейв пропущен: без изменений " + source);
+                }
                 return;
             }
 
             Data.SaveFileData = content;
             Data.SingleSave = single;
+            Data.PendingSaveIsAuto = saveIsAuto;
+            Data.PendingSaveSlotNumber = normalizedSlot;
+            if (saveIsAuto)
+            {
+                if (normalizedSlot > 0) Data.AutoSaveSlotNumber = normalizedSlot;
+            }
+            else
+            {
+                Data.SaveSlotNumber = normalizedSlot < 1 ? 1 : normalizedSlot;
+            }
+            LastSaveQueuedFingerprint = fingerprint;
+            LastSaveQueuedTargetKey = targetKey;
             LastSaveQueuedAt = DateTime.UtcNow;
             LastSaveQueuedBytes = content.LongLength;
+            SaveUploadRetryCount = 0;
             LastSaveUploadError = null;
+            AddSaveDebugEvent("в-очереди", content.LongLength, source + (single ? " одиночный" : "") + " " + targetText);
 
             if (NetworkDebugEnabled)
             {
-                AddNetworkDebugEvent("Save queued " + source + " " + FormatBytes(content.LongLength) + (single ? " single" : ""));
+                AddNetworkDebugEvent("Сейв в очереди " + source + " " + FormatBytes(content.LongLength)
+                    + (single ? " одиночный" : "") + " " + targetText);
             }
         }
 
         private static string GetSaveOverlayLine()
         {
             var pendingSave = Data?.SaveFileData;
+            var pendingTargetText = GetSaveTargetText(Data?.PendingSaveIsAuto ?? false, Data?.PendingSaveSlotNumber ?? 1);
             if (pendingSave != null && pendingSave.Length > 0)
             {
-                return "SAVE pending " + FormatBytes(pendingSave.LongLength)
-                    + (SaveUploadRetryCount > 0 ? " retry:" + SaveUploadRetryCount : "");
+                return "СЕЙВ в очереди " + FormatBytes(pendingSave.LongLength)
+                    + (SaveUploadRetryCount > 0 ? " повтор:" + SaveUploadRetryCount : "")
+                    + " " + pendingTargetText;
             }
 
             if (!string.IsNullOrEmpty(LastSaveUploadError) && LastSaveQueuedAt != DateTime.MinValue)
             {
                 var sec = (int)Math.Max(0d, (DateTime.UtcNow - LastSaveQueuedAt).TotalSeconds);
-                return "SAVE retry " + sec + "s";
+                return "СЕЙВ повтор " + sec + "с"
+                    + (LastSaveQueuedBytes > 0 ? " " + FormatBytes(LastSaveQueuedBytes) : "")
+                    + " " + pendingTargetText;
             }
 
             if (LastSaveUploadedAt != DateTime.MinValue)
             {
                 var sec = (int)Math.Max(0d, (DateTime.UtcNow - LastSaveUploadedAt).TotalSeconds);
-                return "SAVE ok " + sec + "s";
+                return "СЕЙВ отправлен " + sec + "с"
+                    + (LastSaveUploadedBytes > 0 ? " " + FormatBytes(LastSaveUploadedBytes) : "")
+                    + " " + GetSaveTargetTextFromKey(LastSaveUploadedTargetKey);
             }
 
             return null;
@@ -273,21 +453,27 @@ namespace RimWorldOnlineCity
 
             var lines = new List<string>
             {
-                "DBG " + NetworkDebugHotkey,
-                "UW idle:" + UpdateWorldIdleLevel + " next:" + (nextUpdateSeconds < 0 ? "-" : nextUpdateSeconds + "s"),
-                requestInProgress ? "REQ " + requestSeconds + "s " + FormatBytes(requestLength) : "REQ idle",
-                "REC " + (SessionClient.IsRelogin ? "relogin" : "ok") + " try:" + (Data?.CountReconnectBeforeUpdate ?? 0)
+                "ОТЛ " + NetworkDebugHotkey,
+                "ОБН простой:" + UpdateWorldIdleLevel + " след:" + (nextUpdateSeconds < 0 ? "-" : nextUpdateSeconds + "с"),
+                requestInProgress ? "ЗАПРОС " + requestSeconds + "с " + FormatBytes(requestLength) : "ЗАПРОС простой",
+                "ПЕРЕПОДКЛ " + (SessionClient.IsRelogin ? "перелогин" : "норма") + " попытка:" + (Data?.CountReconnectBeforeUpdate ?? 0)
             };
 
             if (LastUpdateWorldDebugAt != DateTime.MinValue)
             {
                 var lastUpdateSeconds = (int)Math.Max(0d, (now - LastUpdateWorldDebugAt).TotalSeconds);
-                lines.Add("LastUW " + lastUpdateSeconds + "s " + LastUpdateWorldDebugSummary);
+                lines.Add("ПоследнийОБН " + lastUpdateSeconds + "с " + LastUpdateWorldDebugSummary);
+            }
+
+            var lastSaveDebug = GetRecentSaveDebugEvents(1).FirstOrDefault();
+            if (!string.IsNullOrEmpty(lastSaveDebug))
+            {
+                lines.Add("СЕЙВ " + lastSaveDebug);
             }
 
             foreach (var evt in GetRecentNetworkDebugEvents(2))
             {
-                lines.Add("E " + evt);
+                lines.Add("СОБЫТИЕ " + evt);
             }
 
             return lines;
@@ -301,17 +487,24 @@ namespace RimWorldOnlineCity
 
             var lines = new List<string>
             {
-                "[Network debug]",
-                "Hotkey: " + NetworkDebugHotkey,
-                "Ping: " + pingMs + "ms",
-                "LastServerConnectFail: " + lastServerConnectFail
+                "[Отладка сети]",
+                "Горячая клавиша: " + NetworkDebugHotkey,
+                "Пинг: " + pingMs + "мс",
+                "Сбой последнего соединения: " + (lastServerConnectFail ? "да" : "нет")
             };
 
             var events = GetRecentNetworkDebugEvents(8);
             if (events.Count > 0)
             {
-                lines.Add("Events:");
+                lines.Add("События:");
                 lines.AddRange(events);
+            }
+
+            var saveEvents = GetRecentSaveDebugEvents(SaveDebugEventsMax);
+            if (saveEvents.Count > 0)
+            {
+                lines.Add("События сейва:");
+                lines.AddRange(saveEvents);
             }
 
             return string.Join(Environment.NewLine, lines);
@@ -321,6 +514,31 @@ namespace RimWorldOnlineCity
         {
             UpdateWorldIdleLevel = 0;
             UpdateWorldNextRunAt = DateTime.MinValue;
+        }
+
+        private static void ResetSaveUploadState()
+        {
+            LastSaveQueuedAt = DateTime.MinValue;
+            LastSaveUploadedAt = DateTime.MinValue;
+            LastSaveQueuedBytes = 0;
+            LastSaveUploadedBytes = 0;
+            SaveUploadRetryCount = 0;
+            LastSaveUploadError = null;
+            LastSaveQueuedFingerprint = null;
+            LastSaveUploadedFingerprint = null;
+            LastSaveQueuedTargetKey = null;
+            LastSaveUploadedTargetKey = null;
+            lock (SaveDebugLock)
+            {
+                SaveDebugEvents.Clear();
+            }
+            if (Data != null)
+            {
+                if (Data.SaveSlotNumber < 1) Data.SaveSlotNumber = 1;
+                if (Data.AutoSaveSlotNumber < 1) Data.AutoSaveSlotNumber = 1;
+                Data.PendingSaveIsAuto = false;
+                Data.PendingSaveSlotNumber = Data.SaveSlotNumber;
+            }
         }
 
         private static void ScheduleNextUpdateWorld(bool hasActivity)
@@ -382,18 +600,22 @@ namespace RimWorldOnlineCity
                     byte[] saveFileDataToSend = null;
                     try
                     {
-                        //собираем пакет на сервер // collecting the package on the server
+                        //Собираем пакет для отправки на сервер
                         var toServ = new ModelPlayToServer()
                         {
                             UpdateTime = Data.UpdateTime, //время прошлого запроса
                         };
-                        //данные сохранения игры // save game data
+                        //Данные сохранения игры
                         if (Data.SaveFileData != null && Data.SaveFileData.Length > 0)
                         {
                             Data.AddTimeCheckTimerFail = true;
                             saveFileDataToSend = Data.SaveFileData;
                             toServ.SaveFileData = saveFileDataToSend;
                             toServ.SingleSave = Data.SingleSave;
+                            toServ.SaveIsAuto = Data.PendingSaveIsAuto;
+                            toServ.SaveNumber = Data.PendingSaveIsAuto
+                                ? Data.PendingSaveSlotNumber
+                                : (Data.PendingSaveSlotNumber > 0 ? Data.PendingSaveSlotNumber : 1);
                         }
                         errorNum += "00 ";
 
@@ -404,10 +626,11 @@ namespace RimWorldOnlineCity
                             if (saveFileDataToSend != null)
                             {
                                 SaveUploadRetryCount++;
-                                LastSaveUploadError = "main-thread busy";
+                                LastSaveUploadError = "основной поток занят";
+                                AddSaveDebugEvent("повтор-основной-поток", saveFileDataToSend.LongLength, "повтор:" + SaveUploadRetryCount);
                                 if (NetworkDebugEnabled)
                                 {
-                                    AddNetworkDebugEvent("Save postponed (main thread busy)");
+                                    AddNetworkDebugEvent("Сейв отложен (основной поток занят)");
                                 }
                             }
                             ScheduleNextUpdateWorld(true);
@@ -429,8 +652,7 @@ namespace RimWorldOnlineCity
                         }
 
                         errorNum += "5 ";
-                        //запрос на информацию об игроках. Можно будет ограничить редкое получение для тех кто оффлайн
-                        //request for information about players. It will be possible to limit the rare receipt for those who are offline
+                        //Запрос информации об игроках. Для оффлайн-игроков можно позже ограничить частоту обновления.
                         if (Data.Chats != null && Data.Chats[0].PartyLogin != null)
                         {
                             if (Data.Players == null || Data.Players.Count == 0
@@ -450,22 +672,30 @@ namespace RimWorldOnlineCity
                         }
 
                         errorNum += "6 ";
-                        //отправляем на сервер, получаем ответ
-                        //we send to the server, we get a response2
+                        //Отправляем на сервер и получаем ответ
                         ModelPlayToClient fromServ = connect.PlayInfo(toServ);
                         if (saveFileDataToSend != null)
                         {
+                            var uploadedFingerprint = GetSaveFingerprint(saveFileDataToSend);
+                            var uploadedTargetKey = GetSaveTargetKey(toServ.SaveIsAuto, toServ.SaveNumber);
+                            var uploadedTargetText = GetSaveTargetText(toServ.SaveIsAuto, toServ.SaveNumber);
                             if (ReferenceEquals(Data.SaveFileData, saveFileDataToSend))
                             {
                                 Data.SaveFileData = null;
+                                LastSaveQueuedFingerprint = null;
+                                LastSaveQueuedTargetKey = null;
                             }
+                            LastSaveUploadedFingerprint = uploadedFingerprint;
+                            LastSaveUploadedTargetKey = uploadedTargetKey;
                             LastSaveUploadedAt = DateTime.UtcNow;
                             LastSaveUploadedBytes = saveFileDataToSend.LongLength;
                             SaveUploadRetryCount = 0;
                             LastSaveUploadError = null;
+                            AddSaveDebugEvent("отправлен", saveFileDataToSend.LongLength,
+                                (toServ.SingleSave ? "одиночный " : "") + uploadedTargetText);
                             if (NetworkDebugEnabled)
                             {
-                                AddNetworkDebugEvent("Save uploaded " + FormatBytes(saveFileDataToSend.LongLength));
+                                AddNetworkDebugEvent("Сейв отправлен " + FormatBytes(saveFileDataToSend.LongLength) + " " + uploadedTargetText);
                             }
                         }
                         if (Data.AddTimeCheckTimerFail)
@@ -478,7 +708,7 @@ namespace RimWorldOnlineCity
                         errorNum += "7 ";
                         Loger.Log($"Client {My.Login} UpdateWorld myWO->{toServ.WObjects?.Count}"
                             + ((toServ.WObjectsToDelete?.Count ?? 0) > 0 ? " myWOToDelete->" + toServ.WObjectsToDelete.Count : "")
-                            + (toServ.SaveFileData == null || toServ.SaveFileData.Length == 0 ? "" : " SaveData->" + toServ.SaveFileData.Length)
+                            + (toServ.SaveFileData == null || toServ.SaveFileData.Length == 0 ? "" : " SaveData->" + toServ.SaveFileData.Length + " " + GetSaveTargetText(toServ.SaveIsAuto, toServ.SaveNumber))
                             + ((fromServ.Mails?.Count ?? 0) > 0 ? " Mail<-" + fromServ.Mails.Count : "")
                             + (fromServ.AreAttacking ? " Attacking!" : "")
                             + (fromServ.NeedSaveAndExit ? " Disconnect command!" : "")
@@ -526,7 +756,7 @@ namespace RimWorldOnlineCity
                         if (fromServ.States != null) Data.States = fromServ.States.Where(s => s?.Name != null).ToDictionary(s => s.Name);
 
                         errorNum += "8 ";
-                        //обновляем планету // updating the planet
+                        //Обновляем планету
                         UpdateWorldController.LoadFromServer(fromServ, firstRun);
 
                         errorNum += "9 ";
@@ -566,7 +796,7 @@ namespace RimWorldOnlineCity
                         ScheduleNextUpdateWorld(hasActivity);
                         if (NetworkDebugEnabled && hasActivity)
                         {
-                            AddNetworkDebugEvent((firstRun ? "UpdateWorld first sync " : "UpdateWorld activity ")
+                            AddNetworkDebugEvent((firstRun ? "UpdateWorld первая синхронизация " : "UpdateWorld активность ")
                                 + LastUpdateWorldDebugSummary);
                         }
                         Data.CountReconnectBeforeUpdate = 0;
@@ -578,9 +808,10 @@ namespace RimWorldOnlineCity
                         {
                             SaveUploadRetryCount++;
                             LastSaveUploadError = ex.Message;
+                            AddSaveDebugEvent("повтор-ошибка", saveFileDataToSend.LongLength, CropDebugMessage(ex.Message));
                             if (NetworkDebugEnabled)
                             {
-                                AddNetworkDebugEvent("Save upload retry: " + ex.Message);
+                                AddNetworkDebugEvent("Повтор отправки сейва: " + ex.Message);
                             }
                         }
                         Loger.Log("Client  Exception errorNum = " + errorNum);
@@ -690,6 +921,7 @@ namespace RimWorldOnlineCity
         {
             byte[] content = null;
             Exception memorySaveException = null;
+            var usedDiskFallback = false;
 
             if (SaveInMemoryEnabled)
             {
@@ -701,26 +933,32 @@ namespace RimWorldOnlineCity
                 {
                     memorySaveException = ex;
                     SaveInMemoryEnabled = false;
-                    Loger.Log("Client SaveGameCore memory mode disabled: " + ex);
+                    Loger.Log("Client SaveGameCore режим памяти отключен: " + ex);
+                    AddSaveDebugEvent("генерация-память-ошибка", 0, CropDebugMessage(ex.Message));
                 }
 
                 if (content == null || content.Length <= 1024)
                 {
                     SaveInMemoryEnabled = false;
-                    Loger.Log("Client SaveGameCore memory mode returned too small data. Falling back to disk.");
+                    Loger.Log("Client SaveGameCore режим памяти вернул слишком мало данных. Переход на диск.");
+                    AddSaveDebugEvent("генерация-память-пусто");
                 }
             }
 
             if (content == null || content.Length <= 1024)
             {
+                usedDiskFallback = true;
                 content = SaveGameCoreFromDisk();
             }
 
             if (content == null || content.Length <= 1024)
             {
+                AddSaveDebugEvent("генерация-ошибка", 0, CropDebugMessage(memorySaveException?.Message));
                 if (memorySaveException != null) throw memorySaveException;
-                throw new ApplicationException("Client SaveGameCore failed: save data is empty.");
+                throw new ApplicationException("Client SaveGameCore: данные сохранения пусты.");
             }
+
+            AddSaveDebugEvent(usedDiskFallback ? "генерация-диск" : "генерация-память", content.LongLength);
 
             try
             {
@@ -739,26 +977,35 @@ namespace RimWorldOnlineCity
             LongEventHandler.QueueLongEvent(() =>
             {
                 saved(SaveGameCore());
-            }, "Autosaving", false, null);
+            }, "Автосохранение", false, null);
         }
 
         /// <summary>
         /// Немедленно сохраняет игру и передает на сервер.
         /// </summary>
         /// <param name="single">Будут удалены остальные Варианты сохранений, кроме этого</param>
-        public static void SaveGameNow(bool single = false, Action after = null)
+        public static void SaveGameNow(bool single = false, Action after = null, bool saveIsAuto = false, int saveSlot = 0)
         {
             // checkConfigsBeforeSave(); 
-            Loger.Log("Client SaveGameNow single=" + single.ToString());
+            Loger.Log("Client SaveGameNow single=" + single.ToString() + " saveIsAuto=" + saveIsAuto.ToString() + " saveSlot=" + saveSlot.ToString());
             SaveGame((content) =>
             {
                 if (content.Length > 1024)
                 {
-                    Data.SaveFileData = content;
-                    Data.SingleSave = single;
+                    var slotToSave = saveSlot != 0
+                        ? saveSlot
+                        : (saveIsAuto ? Data.AutoSaveSlotNumber : Data.SaveSlotNumber);
+                    var saveSource = saveIsAuto ? "ручной-авто" : "ручной";
+                    QueueSaveForUpload(content, single, saveSource, saveIsAuto, slotToSave);
                     UpdateWorld(false);
 
                     Loger.Log("Client SaveGameNow OK");
+                }
+                else
+                {
+                    LastSaveUploadError = "данные сохранения слишком малы";
+                    AddSaveDebugEvent("пропуск-малый-размер", content.LongLength, saveIsAuto ? "ручной-авто" : "ручной");
+                    Loger.Log("Client SaveGameNow пропуск отправки: данные сохранения слишком малы");
                 }
                 if (after != null) after();
             });
@@ -770,20 +1017,21 @@ namespace RimWorldOnlineCity
         /// <param name="single">Будут удалены остальные Варианты сохранений, кроме этого</param>
         public static void SaveGameNowInEvent(bool single = false)
         {
-            Loger.Log($"Client {SessionClientController.My.Login} SaveGameNowInEvent single=" + single.ToString());
+            Loger.Log($"Client {SessionClientController.My.Login} SaveGameNowInEvent одиночный=" + single.ToString());
 
             var content = SaveGameCore();
 
             if (content.Length > 1024)
             {
-                Data.SaveFileData = content;
-                Data.SingleSave = single;
+                QueueSaveForUpload(content, single, "событие", false, Data.SaveSlotNumber);
                 UpdateWorld(false);
-
-                //записываем файл только для удобства игрока, чтобы он у него был
-                File.WriteAllBytes(SaveFullName, content);
-
-                Loger.Log($"Client {SessionClientController.My.Login} SaveGameNowInEvent OK");
+                Loger.Log($"Client {SessionClientController.My.Login} SaveGameNowInEvent успешно");
+            }
+            else
+            {
+                LastSaveUploadError = "данные сохранения слишком малы";
+                AddSaveDebugEvent("пропуск-малый-размер", content.LongLength, "событие");
+                Loger.Log($"Client {SessionClientController.My.Login} SaveGameNowInEvent пропуск отправки: данные сохранения слишком малы");
             }
         }
 
@@ -794,7 +1042,7 @@ namespace RimWorldOnlineCity
             var tick = (long)Find.TickManager.TicksGame;
             if (Data.LastSaveTick == tick)
             {
-                Loger.Log($"Client {SessionClientController.My.Login} BackgroundSaveGame() Cancel in pause");
+                Loger.Log($"Client {SessionClientController.My.Login} BackgroundSaveGame() отменено из-за паузы");
                 return;
             }
             Loger.Log($"Client {SessionClientController.My.Login} BackgroundSaveGame()");
@@ -802,8 +1050,7 @@ namespace RimWorldOnlineCity
 
             SaveGame((content) =>
             {
-                Data.SaveFileData = content;
-                Data.SingleSave = false;
+                QueueSaveForUpload(content, false, "фон", true, 0);
             });
         }
 
@@ -971,7 +1218,7 @@ namespace RimWorldOnlineCity
                             }
                             else
                             {
-                                Disconnected("Unknown error in UpdateChats");
+                                Disconnected("Неизвестная ошибка в UpdateChats");
                             }
 
                             Data.ChatCountSkipUpdate = 0;
@@ -1220,21 +1467,21 @@ namespace RimWorldOnlineCity
         {
             if (string.IsNullOrEmpty(Data?.KeyReconnect))
             {
-                Loger.Log("Client Reconnect fail: no KeyReconnect ");
+                Loger.Log("Client Reconnect не выполнен: отсутствует KeyReconnect");
                 return false;
             }
             if (string.IsNullOrEmpty(My?.Login))
             {
-                Loger.Log("Client Reconnect fail: no Login ");
+                Loger.Log("Client Reconnect не выполнен: отсутствует Login");
                 return false;
             }
             if (string.IsNullOrEmpty(ConnectAddr))
             {
-                Loger.Log("Client Reconnect fail: no ConnectAddr ");
+                Loger.Log("Client Reconnect не выполнен: отсутствует адрес подключения");
                 return false;
             }
 
-            //Connect {
+            //Подключение {
             var addr = ConnectAddr;
             int port = 0;
             if (addr.Contains(":")
@@ -1242,13 +1489,13 @@ namespace RimWorldOnlineCity
             {
                 addr = addr.Substring(0, addr.LastIndexOf(":"));
             }
-            var logMsg = "Reconnect to server. Addr: " + addr + ". Port: " + (port == 0 ? SessionClient.DefaultPort : port).ToString();
+            var logMsg = "Переподключение к серверу. Адрес: " + addr + ". Порт: " + (port == 0 ? SessionClient.DefaultPort : port).ToString();
             Loger.Log("Client " + logMsg);
             Log.Warning(logMsg);
             var connect = new SessionClient();
             if (!connect.Connect(addr, port))
             {
-                logMsg = "Reconnect net fail: " + connect.ErrorMessage?.ServerTranslate();
+                logMsg = "Сетевое переподключение не выполнено: " + connect.ErrorMessage?.ServerTranslate();
                 Loger.Log("Client " + logMsg);
                 Log.Warning(logMsg);
                 return false;
@@ -1256,13 +1503,13 @@ namespace RimWorldOnlineCity
             SessionClient.Recreate(connect);
             // }
 
-            logMsg = "Reconnect login: " + My.Login;
+            logMsg = "Переподключение, вход: " + My.Login;
             Loger.Log("Client " + logMsg);
             Log.Warning(logMsg);
             //var connect = SessionClient.Get;
             if (!connect.Reconnect(My.Login, Data.KeyReconnect, GetSaffix()))
             {
-                logMsg = "Reconnect login fail: " + connect.ErrorMessage?.ServerTranslate();
+                logMsg = "Переподключение, вход не выполнен: " + connect.ErrorMessage?.ServerTranslate();
                 Loger.Log("Client " + logMsg);
                 Log.Warning(logMsg);
                 //Find.WindowStack.Add(new Dialog_Input("OCity_SessionCC_LoginFailTitle".Translate(), connect.ErrorMessage?.ServerTranslate(), true));
@@ -1270,7 +1517,7 @@ namespace RimWorldOnlineCity
             }
             else
             {
-                logMsg = "Reconnect OK";
+                logMsg = "Переподключение выполнено";
                 Loger.Log("Client " + logMsg);
                 Log.Warning(logMsg);
                 return true;
@@ -1330,6 +1577,7 @@ namespace RimWorldOnlineCity
         {
             ReconnectSupportRuning = false;
             ResetUpdateWorldSchedule();
+            ResetSaveUploadState();
             Loger.Log("Client TimersStop b");
             if (TimerReconnect != null) TimerReconnect.Stop();
             TimerReconnect = null;
@@ -1337,6 +1585,134 @@ namespace RimWorldOnlineCity
             if (Timers != null) Timers.Stop();
             Timers = null;
             Loger.Log("Client TimersStop e");
+        }
+
+        /// <summary>
+        /// Перезагружает текущий мир из активного серверного слота игрока.
+        /// Используется после выбора слота загрузки в окне серверных сохранений.
+        /// </summary>
+        public static void ReloadWorldFromServerSave(string selectedSlotText = null)
+        {
+            var slotText = string.IsNullOrWhiteSpace(selectedSlotText) ? "выбранного слота" : selectedSlotText;
+
+            if (Current.Game == null || !SessionClient.Get.IsLogined)
+            {
+                Messages.Message("Загрузка " + slotText + " недоступна: нет активного подключения.", MessageTypeDefOf.RejectInput);
+                return;
+            }
+
+            if (Data == null || My == null)
+            {
+                Messages.Message("Загрузка " + slotText + " недоступна: данные сессии не готовы.", MessageTypeDefOf.RejectInput);
+                return;
+            }
+
+            if (SingleCommandIsBusy)
+            {
+                Messages.Message("Ожидается завершение другой сетевой операции.", MessageTypeDefOf.RejectInput);
+                return;
+            }
+
+            if (Timers != null) Timers.Pause = true;
+            if (TimerReconnect != null) TimerReconnect.Pause = true;
+
+            Messages.Message("Загрузка " + slotText + ": выполняем переподключение...", MessageTypeDefOf.NeutralEvent);
+            AddNetworkDebugEvent("Загрузка выбранного сейва: старт " + slotText);
+
+            Task.Factory.StartNew(() =>
+            {
+                try
+                {
+                    if (!Reconnect())
+                    {
+                        var reconnectMessage = SessionClient.Get?.ErrorMessage?.ServerTranslate();
+                        throw new ApplicationException("переподключение не выполнено"
+                            + (string.IsNullOrWhiteSpace(reconnectMessage) ? string.Empty : ": " + reconnectMessage));
+                    }
+
+                    var connect = SessionClient.Get;
+                    var serverInfo = connect.GetInfo(ServerInfoType.Full);
+                    if (serverInfo == null)
+                    {
+                        var infoError = connect.ErrorMessage?.ServerTranslate();
+                        throw new ApplicationException("сервер не вернул информацию о мире"
+                            + (string.IsNullOrWhiteSpace(infoError) ? string.Empty : ": " + infoError));
+                    }
+
+                    SetFullInfo(serverInfo);
+                    AddNetworkDebugEvent("Загрузка выбранного сейва: подключение восстановлено");
+
+                    ModBaseData.RunMainThread(() =>
+                    {
+                        StartLoadWorldFromMainMenu(serverInfo, slotText);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    SkipRestoreMapViewAfterLoadOnce = false;
+                    SkipBeforeExitForServerReloadOnce = false;
+                    Loger.Log("Client ReloadWorldFromServerSave ошибка: " + ex, Loger.LogLevel.ERROR);
+                    AddNetworkDebugEvent("Загрузка выбранного сейва: ошибка " + ex.Message);
+                    ModBaseData.RunMainThread(() =>
+                    {
+                        Disconnected("Ошибка загрузки выбранного сохранения: " + ex.Message);
+                    });
+                }
+            });
+        }
+
+
+        /// <summary>
+        /// Безопасная загрузка выбранного серверного сейва через переход в главное меню.
+        /// Такой режим стабилен для рендера карты и повторяет успешный сценарий «выйти и зайти снова».
+        /// </summary>
+        private static void StartLoadWorldFromMainMenu(ModelInfo serverInfo, string slotText)
+        {
+            if (serverInfo == null)
+            {
+                Disconnected("Ошибка загрузки: сервер не вернул данные мира.");
+                return;
+            }
+
+            TimersStop();
+            // После TimersStop() таймеры равны null, а InitGame() ожидает, что они уже созданы.
+            Timers = new WorkTimer();
+            TimerReconnect = new WorkTimer();
+
+            SkipRestoreMapViewAfterLoadOnce = true;
+            SkipBeforeExitForServerReloadOnce = true;
+            MainMenuDrawer_DoMainMenuControls_Patch.DontDisconnectTime = DateTime.UtcNow.AddMinutes(2);
+
+            try
+            {
+                GenScene.GoToMainMenu();
+            }
+            catch (Exception exMenu)
+            {
+                    SkipRestoreMapViewAfterLoadOnce = false;
+                SkipBeforeExitForServerReloadOnce = false;
+                Loger.Log("Client StartLoadWorldFromMainMenu ошибка перехода в меню: " + exMenu, Loger.LogLevel.ERROR);
+                Disconnected("Ошибка перехода в меню перед загрузкой: " + exMenu.Message);
+                return;
+            }
+
+            LongEventHandler.ExecuteWhenFinished(() =>
+            {
+                try
+                {
+                    MainMenuDrawer_DoMainMenuControls_Patch.DontDisconnectTime = DateTime.UtcNow.AddMinutes(2);
+                    AddNetworkDebugEvent("Загрузка выбранного сейва: безопасная загрузка через главное меню");
+                    Messages.Message("Загрузка " + slotText + ": выполняем безопасный вход в мир...", MessageTypeDefOf.NeutralEvent);
+                    LoadPlayerWorld(serverInfo);
+                }
+                catch (Exception exLoad)
+                {
+                    SkipRestoreMapViewAfterLoadOnce = false;
+                    SkipBeforeExitForServerReloadOnce = false;
+                    Loger.Log("Client StartLoadWorldFromMainMenu ошибка запуска загрузки: " + exLoad, Loger.LogLevel.ERROR);
+                    Disconnected("Ошибка запуска загрузки мира: " + exLoad.Message);
+                }
+            });
         }
 
         public static Scenario GetScenarioByName(string scenarioName)
@@ -1423,6 +1799,18 @@ namespace RimWorldOnlineCity
             Data.TimeChangeEnablePVP = serverInfo.TimeChangeEnablePVP;
             Data.GeneralSettings = serverInfo.GeneralSettings;
             Data.ProtectingNovice = serverInfo.ProtectingNovice;
+            var manualSlots = serverInfo.ManualSaveSlotsCount > 0
+                ? serverInfo.ManualSaveSlotsCount
+                : (serverInfo.SaveSlotsCount > 0 ? serverInfo.SaveSlotsCount : 1);
+            Data.SaveSlotsCount = manualSlots;
+            Data.SaveSlotNumber = serverInfo.ActiveSaveSlot > 0 ? serverInfo.ActiveSaveSlot : 1;
+            if (Data.SaveSlotNumber > Data.SaveSlotsCount) Data.SaveSlotNumber = Data.SaveSlotsCount;
+            Data.AutoSaveSlotsCount = serverInfo.AutoSaveSlotsCount >= 0 ? serverInfo.AutoSaveSlotsCount : 0;
+            Data.AutoSaveSlotNumber = serverInfo.ActiveAutoSaveSlot > 0 ? serverInfo.ActiveAutoSaveSlot : 1;
+            if (Data.AutoSaveSlotsCount <= 0) Data.AutoSaveSlotNumber = 1;
+            if (Data.AutoSaveSlotsCount > 0 && Data.AutoSaveSlotNumber > Data.AutoSaveSlotsCount) Data.AutoSaveSlotNumber = Data.AutoSaveSlotsCount;
+            Data.PendingSaveIsAuto = false;
+            Data.PendingSaveSlotNumber = Data.SaveSlotNumber;
             MainHelper.OffAllLog = serverInfo.EnableFileLog;
         }
 
@@ -1452,7 +1840,11 @@ namespace RimWorldOnlineCity
                     + " Scenario=" + serverInfo.ScenarioName
                     + " NeedCreateWorld=" + serverInfo.NeedCreateWorld
                     + " DelaySaveGame=" + Data.DelaySaveGame
-                    + " DisableDevMode=" + Data.DisableDevMode);
+                    + " DisableDevMode=" + Data.DisableDevMode
+                    + " ManualSaveSlots=" + Data.SaveSlotsCount
+                    + " ActiveManualSlot=" + Data.SaveSlotNumber
+                    + " AutoSaveSlots=" + Data.AutoSaveSlotsCount
+                    + " ActiveAutoSlot=" + Data.AutoSaveSlotNumber);
                 Loger.Log("Client Grants=" + serverInfo.My.Grants.ToString());
 
                 if (SessionClientController.Data.DisableDevMode)
@@ -1596,11 +1988,11 @@ namespace RimWorldOnlineCity
         {
             Loger.Log("Client LoadPlayerWorld");
             UpdateModsWindow.WindowsTitle = "Online City";
-            UpdateModsWindow.Title = "Loading world from server";
-            UpdateModsWindow.HashStatus = "Please wait, this may take a while";
+            UpdateModsWindow.Title = "Загрузка мира с сервера";
+            UpdateModsWindow.HashStatus = "Пожалуйста, подождите, это может занять время";
             UpdateModsWindow.SummaryList = null;
             UpdateModsWindow.ResetProgress();
-            UpdateModsWindow.SetIndeterminateProgress("Loading...");
+            UpdateModsWindow.SetIndeterminateProgress("Загрузка...");
 
             var form = new UpdateModsWindow()
             {
@@ -1609,7 +2001,7 @@ namespace RimWorldOnlineCity
             };
             Find.WindowStack.Add(form);
 
-            AddNetworkDebugEvent("WorldLoad start");
+            AddNetworkDebugEvent("Загрузка мира: старт");
 
             Task.Factory.StartNew(() =>
             {
@@ -1617,8 +2009,24 @@ namespace RimWorldOnlineCity
                 Exception worldLoadException = null;
                 try
                 {
-                    var connect = SessionClient.Get;
-                    worldData = connect.WorldLoad();
+                    for (var attempt = 1; attempt <= 2; attempt++)
+                    {
+                        var connect = SessionClient.Get;
+                        worldData = connect.WorldLoad();
+                        if (worldData != null && worldData.SaveFileData != null && worldData.SaveFileData.Length > 0)
+                        {
+                            break;
+                        }
+
+                        if (attempt < 2)
+                        {
+                            Loger.Log("Client LoadPlayerWorld: пустые данные мира, повтор после переподключения");
+                            if (!Reconnect())
+                            {
+                                break;
+                            }
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1630,23 +2038,27 @@ namespace RimWorldOnlineCity
                 {
                     if (worldLoadException != null)
                     {
+                        SkipRestoreMapViewAfterLoadOnce = false;
+                        SkipBeforeExitForServerReloadOnce = false;
                         UpdateModsWindow.CompletedAndClose = true;
-                        AddNetworkDebugEvent("WorldLoad fail " + worldLoadException.Message);
-                        Disconnected("Error " + worldLoadException.Message);
+                        AddNetworkDebugEvent("Загрузка мира: ошибка " + worldLoadException.Message);
+                        Disconnected("Ошибка: " + worldLoadException.Message);
                         return;
                     }
 
                     if (worldData == null || worldData.SaveFileData == null || worldData.SaveFileData.Length == 0)
                     {
+                        SkipRestoreMapViewAfterLoadOnce = false;
+                        SkipBeforeExitForServerReloadOnce = false;
                         UpdateModsWindow.CompletedAndClose = true;
-                        AddNetworkDebugEvent("WorldLoad fail empty data");
-                        Disconnected("Error world data is empty");
+                        AddNetworkDebugEvent("Загрузка мира: пустые данные");
+                        Disconnected("Ошибка: данные мира пусты");
                         return;
                     }
 
                     UpdateModsWindow.SetProgress(1d, "100%");
                     UpdateModsWindow.CompletedAndClose = true;
-                    AddNetworkDebugEvent("WorldLoad ok " + FormatBytes(worldData.SaveFileData.Length));
+                    AddNetworkDebugEvent("Загрузка мира: успешно " + FormatBytes(worldData.SaveFileData.Length));
                     LoadPlayerWorldData(worldData);
                 });
             });
@@ -1670,6 +2082,23 @@ namespace RimWorldOnlineCity
                         ScribeLoader_InitLoading_Patch.LoadData = null;
 
                         InitGame();
+                        if (SkipBeforeExitForServerReloadOnce)
+                        {
+                            // Подстраховка: флаг должен сбрасываться в GameExit.BeforeExit.
+                            SkipBeforeExitForServerReloadOnce = false;
+                            Loger.Log("Client LoadPlayerWorldData: аварийный сброс SkipBeforeExitForServerReloadOnce");
+                        }
+                        if (SkipRestoreMapViewAfterLoadOnce)
+                        {
+                            // После полной безопасной перезагрузки через меню карта уже в консистентном состоянии.
+                            // Дополнительное принудительное восстановление не выполняем.
+                    SkipRestoreMapViewAfterLoadOnce = false;
+                            Loger.Log("Client LoadPlayerWorldData: пропуск RestoreMapViewAfterLoad (безопасная загрузка через меню)");
+                        }
+                        else
+                        {
+                            LongEventHandler.ExecuteWhenFinished(RestoreMapViewAfterLoad);
+                        }
                     };
                 }, "Play", "LoadingLongEvent", false, null);
             };
@@ -1680,7 +2109,134 @@ namespace RimWorldOnlineCity
             PreLoadUtility.CheckVersionAndLoad(SaveFullName, ScribeMetaHeaderUtility.ScribeHeaderMode.Map, loadAction);
         }
 
-        //Create world for regular player
+        /// <summary>
+        /// Восстанавливает отображение карты после загрузки сейва с сервера.
+        /// Нужен как страховка от черного экрана, если сторонние моды ломают камеру/GUI в момент загрузки.
+        /// </summary>
+        private static void RestoreMapViewAfterLoad()
+        {
+            try
+            {
+                if (Current.Game == null) return;
+                if (Find.Maps == null || Find.Maps.Count == 0)
+                {
+                    Loger.Log("Client RestoreMapViewAfterLoad: карты не найдены", Loger.LogLevel.WARNING);
+                    return;
+                }
+
+                var targetMap = Find.Maps.FirstOrDefault(m => m != null && m.IsPlayerHome)
+                    ?? Find.CurrentMap
+                    ?? Find.Maps[0];
+                if (targetMap == null)
+                {
+                    Loger.Log("Client RestoreMapViewAfterLoad: целевая карта не определена", Loger.LogLevel.WARNING);
+                    return;
+                }
+
+                RebuildMapRenderManagers(targetMap);
+
+                Current.Game.CurrentMap = targetMap;
+                try
+                {
+                    CameraJumper.TryJump(targetMap.Center, targetMap);
+                }
+                catch (Exception exJump)
+                {
+                    Loger.Log("Client RestoreMapViewAfterLoad: ошибка прыжка камеры " + exJump.Message
+                        , Loger.LogLevel.WARNING);
+                }
+
+                try
+                {
+                    targetMap.mapDrawer?.RegenerateEverythingNow();
+                }
+                catch (Exception exMapDrawer)
+                {
+                    Loger.Log("Client RestoreMapViewAfterLoad: ошибка регенерации карты " + exMapDrawer.Message
+                        , Loger.LogLevel.WARNING);
+                }
+
+                try
+                {
+                    var driver = Find.CameraDriver;
+                    if (driver != null)
+                    {
+                        var center = targetMap.Center.ToVector3Shifted();
+                        var rootSize = Mathf.Max(24f, Mathf.Min(targetMap.Size.x, targetMap.Size.z) / 3f);
+                        driver.SetRootPosAndSize(center, rootSize);
+                    }
+                }
+                catch (Exception exCamera)
+                {
+                    Loger.Log("Client RestoreMapViewAfterLoad: ошибка позиционирования камеры " + exCamera.Message
+                        , Loger.LogLevel.WARNING);
+                }
+                Loger.Log($"Client RestoreMapViewAfterLoad: карта восстановлена tile={targetMap.Tile} size={targetMap.Size}");
+            }
+            catch (Exception ex)
+            {
+                Loger.Log("Client RestoreMapViewAfterLoad ошибка: " + ex, Loger.LogLevel.ERROR);
+            }
+        }
+
+        /// <summary>
+        /// Полностью пересоздает менеджеры отрисовки карты.
+        /// Это совместимый обход для случаев, когда после загрузки сейва сторонние патчи оставляют рендер в сломанном состоянии.
+        /// </summary>
+        private static void RebuildMapRenderManagers(Map targetMap)
+        {
+            if (targetMap == null) return;
+
+            try
+            {
+                targetMap.dynamicDrawManager = new DynamicDrawManager(targetMap);
+                var allThings = targetMap.listerThings?.AllThings;
+                if (allThings != null)
+                {
+                    for (int i = 0; i < allThings.Count; i++)
+                    {
+                        var thing = allThings[i];
+                        if (thing == null) continue;
+                        try
+                        {
+                            targetMap.dynamicDrawManager.RegisterDrawable(thing);
+                        }
+                        catch
+                        {
+                            // Некоторые вещи могут быть частично восстановлены после загрузки модов; пропускаем их.
+                        }
+                    }
+                }
+
+                targetMap.mapDrawer = new MapDrawer(targetMap);
+                try
+                {
+                    targetMap.mapDrawer.RegenerateEverythingNow();
+                }
+                catch (Exception exRegenerate)
+                {
+                    Loger.Log("Client RestoreMapViewAfterLoad: ошибка RegenerateEverythingNow " + exRegenerate.Message
+                        , Loger.LogLevel.WARNING);
+                    try
+                    {
+                        targetMap.mapDrawer = new MapDrawer(targetMap);
+                        targetMap.mapDrawer.RegenerateEverythingNow();
+                    }
+                    catch
+                    {
+                        // Ничего страшного: главное не уронить кадр в момент восстановления.
+                    }
+                }
+                Loger.Log("Client RestoreMapViewAfterLoad: менеджеры отрисовки карты пересозданы");
+            }
+            catch (Exception ex)
+            {
+                Loger.Log("Client RestoreMapViewAfterLoad: ошибка пересоздания менеджеров отрисовки " + ex
+                    , Loger.LogLevel.WARNING);
+            }
+        }
+
+        //Создание мира для обычного игрока
         private static void CreatePlayerWorld(ModelInfo serverInfo)
         {
             Loger.Log("Client InitConnected() ExistMap0");
@@ -1768,11 +2324,11 @@ namespace RimWorldOnlineCity
         private static void StartInitialWorldSyncWithProgress(Action onComplete)
         {
             UpdateModsWindow.WindowsTitle = "Online City";
-            UpdateModsWindow.Title = "Synchronizing world";
-            UpdateModsWindow.HashStatus = "Please wait, this may take a while";
+            UpdateModsWindow.Title = "Синхронизация мира";
+            UpdateModsWindow.HashStatus = "Пожалуйста, подождите, это может занять время";
             UpdateModsWindow.SummaryList = null;
             UpdateModsWindow.ResetProgress();
-            UpdateModsWindow.SetIndeterminateProgress("Preparing...");
+            UpdateModsWindow.SetIndeterminateProgress("Подготовка...");
 
             Find.WindowStack.Add(new UpdateModsWindow()
             {
@@ -1795,7 +2351,7 @@ namespace RimWorldOnlineCity
 
                         if (total <= 0)
                         {
-                            UpdateModsWindow.SetIndeterminateProgress("Syncing...");
+                            UpdateModsWindow.SetIndeterminateProgress("Синхронизация...");
                         }
                         else
                         {
@@ -1838,7 +2394,7 @@ namespace RimWorldOnlineCity
 
                     if (syncException != null)
                     {
-                        Disconnected("Error " + syncException.Message);
+                        Disconnected("Ошибка: " + syncException.Message);
                         return;
                     }
 
@@ -1865,12 +2421,12 @@ namespace RimWorldOnlineCity
         {
             if (ClientFileCheckers == null || ClientFileCheckers.Any(x => x == null))
             {
-                done("Error not files");
+                done("Ошибка: отсутствуют файлы");
                 return;
             }
 
             UpdateModsWindow.ResetProgress();
-            UpdateModsWindow.SetIndeterminateProgress("Preparing...");
+            UpdateModsWindow.SetIndeterminateProgress("Подготовка...");
 
             var form = new UpdateModsWindow()
             {
@@ -1879,7 +2435,7 @@ namespace RimWorldOnlineCity
             Find.WindowStack.Add(form);
             form.HideOK = true;
 
-            AddNetworkDebugEvent("Mod sync start");
+            AddNetworkDebugEvent("Синхронизация модов: старт");
 
             Task.Factory.StartNew(() =>
             {
@@ -1892,7 +2448,7 @@ namespace RimWorldOnlineCity
                     approveModList = approveModList && res;
                 }
 
-                AddNetworkDebugEvent("Mod sync done");
+                AddNetworkDebugEvent("Синхронизация модов: завершено");
                 UpdateModsWindow.CompletedAndClose = true;
                 form.OnCloseed = () =>
                 { 
@@ -1926,12 +2482,12 @@ namespace RimWorldOnlineCity
             }
 
             var text = new StringBuilder();
-            text.AppendLine("Missing required DLC/content from server ModsConfig.xml:");
+            text.AppendLine("Отсутствует обязательный DLC/контент из серверного ModsConfig.xml:");
             foreach (var packageId in missingPackageIds)
             {
                 text.AppendLine(packageId);
             }
-            text.Append("Install and enable the listed DLC/content, then restart the game.");
+            text.Append("Установите и включите перечисленный DLC/контент, затем перезапустите игру.");
             return text.ToString();
         }
 
@@ -2037,7 +2593,7 @@ namespace RimWorldOnlineCity
                 Loger.Log("Client GetFirstConfigPage fallback: " + ext.ToString());
             }
 
-            //fallback to the custom page chain for edge cases
+            //Резервный переход к стандартной цепочке страниц для редких случаев
             List<Page> list = new List<Page>();
             list.Add(new Page_SelectStartingSite());
             if (ModsConfig.IdeologyActive)
@@ -2071,7 +2627,7 @@ namespace RimWorldOnlineCity
         {
             Loger.Log("Client CreatingServerWorld()");
             //Удаление лишнего, добавление того, что нужно в пустом новом мире на сервере
-            //Remove unnecessary, add what you need in an empty new world on the server
+            //Удаляем лишнее и добавляем нужное для нового пустого мира на сервере
 
             var allWorldObjects = GameUtils.GetAllWorldObjects();
             var nonPlayerSettlements = allWorldObjects
@@ -2128,8 +2684,7 @@ namespace RimWorldOnlineCity
             //сохраняем в основном потоке и передаем на сервер в UpdateWorld() внутри InitGame()
             SaveGame((content) =>
             {
-                Data.SaveFileData = content;
-                Data.SingleSave = true;
+                QueueSaveForUpload(content, true, "создание-карты", false, Data?.SaveSlotNumber ?? 1);
                 InitGame();
             });
         }
@@ -2210,7 +2765,7 @@ namespace RimWorldOnlineCity
             SessionClient.IsRelogin = true;
             ReconnectSupportInit();
             ReconnectSupportRuning = true;
-            AddNetworkDebugEvent("Reconnect start");
+            AddNetworkDebugEvent("Переподключение: старт");
             try
             {
                 var repeat = 3;
@@ -2223,7 +2778,7 @@ namespace RimWorldOnlineCity
                         {
                             Data.LastServerConnectFail = false;
                             Loger.Log($"Client CheckReconnectTimer() OK #{Data.CountReconnectBeforeUpdate}");
-                            AddNetworkDebugEvent("Reconnect ok #" + Data.CountReconnectBeforeUpdate);
+                            AddNetworkDebugEvent("Переподключение: успешно #" + Data.CountReconnectBeforeUpdate);
                             if (Data.ActionAfterReconnect != null)
                             {
                                 var aar = Data.ActionAfterReconnect;
@@ -2236,7 +2791,7 @@ namespace RimWorldOnlineCity
                     catch (Exception ex)
                     {
                         Loger.Log("Client CheckReconnectTimer() Exception:" + ex.ToString());
-                        AddNetworkDebugEvent("Reconnect exception " + ex.Message);
+                        AddNetworkDebugEvent("Переподключение: исключение " + ex.Message);
                     }
                     var sleep = 7000;
                     while (sleep > 0)
@@ -2247,7 +2802,7 @@ namespace RimWorldOnlineCity
                         sleep -= 500;
                     }
                 }
-                AddNetworkDebugEvent("Reconnect failed");
+                AddNetworkDebugEvent("Переподключение: не удалось");
                 return false;
             }
             finally
@@ -2299,16 +2854,16 @@ namespace RimWorldOnlineCity
                     if (sec > requestTimeout)
                     {
                         needReconnect = true;
-                        reconnectReason = "request timeout";
-                        Loger.Log($"Client ReconnectWithTimers len={len} sec={sec} timeout={requestTimeout} noPing={Data.LastServerConnectFail}");
+                        reconnectReason = "таймаут запроса";
+                        Loger.Log($"Client ReconnectWithTimers len={len} sec={sec} timeout={requestTimeout} нетПинга={Data.LastServerConnectFail}");
                     }
                 }
                 //проверка пропажи пинга
                 if (!needReconnect && !requestInProgress && Data.LastServerConnectFail)
                 {
                     needReconnect = true;
-                    reconnectReason = "no ping";
-                    Loger.Log($"Client ReconnectWithTimers noPing");
+                    reconnectReason = "нет пинга";
+                    Loger.Log("Client ReconnectWithTimers нет пинга");
                 }
                 //проверка не завис ли поток с таймером
                 if (!needReconnect && !requestInProgress && !Data.DontCheckTimerFail && !Timers.IsStop && Timers.LastLoop != DateTime.MinValue)
@@ -2317,19 +2872,19 @@ namespace RimWorldOnlineCity
                     if (sec > (Data.AddTimeCheckTimerFail ? 120 : 30))
                     {
                         needReconnect = true;
-                        reconnectReason = "timer stall";
+                        reconnectReason = "завис таймер";
                         Loger.Log($"Client ReconnectWithTimers timerFail {sec}");
                         Timers.LastLoop = DateTime.UtcNow; //сбрасываем, т.к. поток в таймере продолжает ждать наш коннект
                     }
                 }
                 if (needReconnect)
                 {
-                    AddNetworkDebugEvent("Reconnect trigger " + (reconnectReason ?? "unknown"));
+                    AddNetworkDebugEvent("Переподключение: триггер " + (reconnectReason ?? "неизвестно"));
                     //котострофа
                     if (++Data.CountReconnectBeforeUpdate > 4 || !ReconnectWithTimers())
                     {
                         Loger.Log("Client CheckReconnectTimer Disconnected after try reconnect");
-                        AddNetworkDebugEvent("Disconnected after reconnect tries");
+                        AddNetworkDebugEvent("Отключение после попыток переподключения");
                         Disconnected("OCity_SessionCC_Disconnected".Translate()
                             , Data.CountReconnectBeforeUpdate > 4 ? () =>
                             {
@@ -2343,7 +2898,7 @@ namespace RimWorldOnlineCity
             {
                 //Никогда не должен был сюда заходить, но как то раз зашел, почему - так и не разобрались. Но теперь этот код тут :)
                 Loger.Log("Client CheckReconnectTimer exception: " + e.ToString(), Loger.LogLevel.ERROR);
-                AddNetworkDebugEvent("CheckReconnectTimer exception " + e.Message);
+                AddNetworkDebugEvent("Проверка переподключения: исключение " + e.Message);
                 try
                 {
                     Disconnected("OCity_SessionCC_Disconnected".Translate());
@@ -2383,6 +2938,14 @@ namespace RimWorldOnlineCity
                 ChatController.Init(true);
                 Data.UpdateTime = DateTime.MinValue;
                 ResetUpdateWorldSchedule();
+                ResetSaveUploadState();
+                if (Timers == null || TimerReconnect == null)
+                {
+                    // Защита от сценариев, где таймеры были остановлены при переподключении/перезагрузке мира.
+                    if (Timers == null) Timers = new WorkTimer();
+                    if (TimerReconnect == null) TimerReconnect = new WorkTimer();
+                    Loger.Log("Client InitGame: таймеры были пустыми и восстановлены");
+                }
                 //UpdateWorld Синхронизация мира
                 UpdateWorld(true);
                 Data.LastServerConnect = DateTime.MinValue;
@@ -2406,6 +2969,12 @@ namespace RimWorldOnlineCity
                     {
                         Loger.Log("Client BeforeExit ");
                         GameExit.BeforeExit = null;
+                        if (SkipBeforeExitForServerReloadOnce)
+                        {
+                            SkipBeforeExitForServerReloadOnce = false;
+                            Loger.Log("Client BeforeExit: служебный переход в меню для загрузки сейва, сохранение и disconnect пропущены");
+                            return;
+                        }
                         TimersStop();
                         if (Current.Game == null) return;
 
@@ -2464,3 +3033,4 @@ namespace RimWorldOnlineCity
 
     }
 }
+

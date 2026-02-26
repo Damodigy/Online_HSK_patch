@@ -153,6 +153,7 @@
     <Compile Include="Services\GetPlayerInfoExtended.cs" />
     <Compile Include="Services\IGenerateResponseContainer.cs" />
     <Compile Include="Services\LoginByPassword.cs" />
+    <Compile Include="Services\PlayerSaves.cs" />
     <Compile Include="Services\PlayInfo.cs" />
     <Compile Include="Services\PostingChat.cs" />
     <Compile Include="Services\Registration.cs" />
