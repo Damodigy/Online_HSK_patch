@@ -233,6 +233,11 @@ namespace ServerOnlineCity.Model
 
         public int MarketValueRankingLast;
 
+        /// <summary>
+        /// Последний id записи из глобального журнала событий, отправленный игроку.
+        /// </summary>
+        public long LastStoryEventIdDelivered;
+
         private PlayerServer()
         {
             ExitReason = DisconnectReason.AllGood;

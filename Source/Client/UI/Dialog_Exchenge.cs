@@ -1009,6 +1009,31 @@ namespace RimWorldOnlineCity.UI
             rectText.y += rectText.height;
             rect.y += 10;
             rectText.y += 10;
+            
+            //кнопка "Бартер"
+            var hasBarterTarget = (WorldObjectCaravanOnlinesTile?.Any(wo => wo != null && wo.OnlinePlayerLogin != SessionClientController.My?.Login) ?? false);
+            Text.Anchor = TextAnchor.MiddleCenter;
+            GUI.color = Color.white;
+            if (ActiveElementBlock || !hasBarterTarget) GUI.color = Color.gray;
+            if (Widgets.ButtonImage(rect, GeneralTexture.TradeButtonIcon))
+            {
+                GUI.color = Color.white;
+                if (ActiveElementBlock || !hasBarterTarget) return;
+                OpenBarterMenu();
+                return;
+            }
+            GUI.color = Color.white;
+            rect.y += rect.height;
+            rectText.y += rect.height;
+            Text.Anchor = TextAnchor.MiddleCenter;
+            Widgets.Label(rectText, "OCity_Dialog_Exchenge_Counterproposal".Translate());
+            rect.y += rectText.height;
+            rectText.y += rectText.height;
+            Widgets.Label(rectText, "OCity_DialogExchenge_InThisPosition".Translate());
+            rect.y += rectText.height;
+            rectText.y += rectText.height;
+            rect.y += 10;
+            rectText.y += 10;
 
             //кнопка Доставка в удаленную точку
             if (WorldObjectCurrent is TradeThingsOnline)
@@ -1298,6 +1323,44 @@ namespace RimWorldOnlineCity.UI
             var menu = new FloatMenu(listFO);
             Find.WindowStack.Add(menu);
 
+        }
+        
+        /// <summary>
+        /// Подготавливает приватный бартерный ордер с выбранным игроком.
+        /// </summary>
+        public void PrepareBarterWith(CaravanOnline target)
+        {
+            if (target == null || string.IsNullOrEmpty(target.OnlinePlayerLogin)) return;
+            if (SessionClientController.My?.Login == target.OnlinePlayerLogin) return;
+
+            CreateMyOrder();
+            if (EditOrder == null) return;
+
+            var player = target.Player?.Public ?? SessionClientController.Data?.Players?.TryGetValue(target.OnlinePlayerLogin)?.Public;
+            if (player == null)
+            {
+                player = new Player() { Login = target.OnlinePlayerLogin };
+            }
+
+            EditOrder.PrivatPlayers.Clear();
+            EditOrder.PrivatPlayers.Add(player);
+            EditOrderTitle = "OCity_Dialog_Exchenge_Counterproposal".TranslateCache() + " " + target.OnlinePlayerLogin;
+            TabIndex = 1;
+            EditOrderChange();
+        }
+
+        private void OpenBarterMenu()
+        {
+            var listFO = (WorldObjectCaravanOnlinesTile ?? new List<CaravanOnline>())
+                .Where(wo => wo != null && wo.OnlinePlayerLogin != SessionClientController.My?.Login)
+                .Select(wo => ExchengeUtils.Barter_GetFloatMenu(wo, () =>
+                {
+                    SoundDefOf.Tick_High.PlayOneShotOnCamera(null);
+                    PrepareBarterWith(wo);
+                }))
+                .ToList();
+            if (listFO.Count == 0) return;
+            Find.WindowStack.Add(new FloatMenu(listFO));
         }
 
         private void CreateMyOrder()

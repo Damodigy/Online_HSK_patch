@@ -135,7 +135,9 @@ namespace RimWorldOnlineCity
                 yield return o;
             }
 
-            if (SessionClientController.My == null || this.Player == null) yield break;
+            if (SessionClientController.My == null
+                || OnlineWObject == null
+                || string.IsNullOrEmpty(OnlinePlayerLogin)) yield break;
 
             var player = this.Player;
             FloatMenuOption fmoTrade;
@@ -151,10 +153,25 @@ namespace RimWorldOnlineCity
                 yield break;
             }
             yield return fmoTrade;
+            
+            FloatMenuOption fmoBarter;
+            try
+            {
+                fmoBarter = ExchengeUtils.Barter_GetFloatMenu(this, () =>
+                {
+                    caravan.pather.StartPath(this.Tile, new CaravanArrivalAction_VisitOnline(this, "barter"), true);
+                });
+            }
+            catch (Exception ex)
+            {
+                yield break;
+            }
+            yield return fmoBarter;
 
             // Атаковать
             if (SessionClientController.My.EnablePVP
                 && this is BaseOnline
+                && player != null
                 && GameAttacker.CanStart)
             {
                 FloatMenuOption fmo;

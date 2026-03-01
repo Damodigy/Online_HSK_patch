@@ -33,6 +33,7 @@ namespace ServerOnlineCity.Services
                 lock (context.Player)
                 {
                     var timeNow = DateTime.UtcNow;
+                    List<BarterOfferEnvelope> barterOfferMails = null;
 
                     var data = Repository.GetData;
 
@@ -99,6 +100,7 @@ namespace ServerOnlineCity.Services
                                     , ModelMailMessadge.MessadgeTypes.GreyGoldenLetter
                                     , order.Tile
                                     );
+                                barterOfferMails = PrepareBarterOfferMail(order, context.Player);
                             }
                         }
                         Loger.Log("Server ExchengeEdit " + context.Player.Public.Login + " Add Id = " + order.Id.ToString(), Loger.LogLevel.EXCHANGE);
@@ -173,6 +175,7 @@ namespace ServerOnlineCity.Services
                                         , ModelMailMessadge.MessadgeTypes.GreyGoldenLetter
                                         , order.Tile
                                         );
+                                    barterOfferMails = PrepareBarterOfferMail(order, context.Player);
                                 }
                             }
                             else
@@ -200,6 +203,7 @@ namespace ServerOnlineCity.Services
                         }
                     }
 
+                    SendBarterOfferMail(barterOfferMails);
                     Repository.Get.ChangeData = true;
 
                     return new ModelStatus()
@@ -214,6 +218,74 @@ namespace ServerOnlineCity.Services
                 ExceptionUtil.ExceptionLog(exp, "Server ExchengeEdit login=" + context?.Player?.Public?.Login);
                 throw;
             }
+        }
+
+        private static List<BarterOfferEnvelope> PrepareBarterOfferMail(TradeOrder order, PlayerServer owner)
+        {
+            if (order == null || owner == null
+                || order.Id <= 0
+                || order.CountReady <= 0
+                || (order.PrivatPlayers?.Count ?? 0) == 0
+                || (order.SellThings?.Count ?? 0) == 0
+                || (order.BuyThings?.Count ?? 0) == 0)
+            {
+                return null;
+            }
+
+            var recipients = order.PrivatPlayers
+                .Where(p => p != null && !string.IsNullOrEmpty(p.Login) && p.Login != owner.Public.Login)
+                .GroupBy(p => p.Login)
+                .Select(g => g.First())
+                .ToList();
+            if (recipients.Count == 0) return null;
+
+            var result = new List<BarterOfferEnvelope>();
+
+            foreach (var recipientPublic in recipients)
+            {
+                var recipient = Repository.GetPlayerByLogin(recipientPublic.Login);
+                if (recipient == null) continue;
+
+                var packet = new ModelMailBarterOffer()
+                {
+                    From = owner.Public,
+                    To = recipient.Public,
+                    OrderId = order.Id,
+                    Tile = order.Tile,
+                    PlaceServerId = order.PlaceServerId,
+                    CountReady = order.CountReady,
+                    SellThings = CloneThings(order.SellThings),
+                    BuyThings = CloneThings(order.BuyThings),
+                };
+
+                result.Add(new BarterOfferEnvelope() { Recipient = recipient, Packet = packet });
+            }
+
+            return result;
+        }
+
+        private static void SendBarterOfferMail(List<BarterOfferEnvelope> mails)
+        {
+            if (mails == null || mails.Count == 0) return;
+            foreach (var mail in mails)
+            {
+                if (mail?.Recipient == null || mail.Packet == null) continue;
+                lock (mail.Recipient)
+                {
+                    mail.Recipient.Mails.Add(mail.Packet);
+                }
+            }
+        }
+
+        private static List<ThingTrade> CloneThings(List<ThingTrade> things)
+        {
+            return things?.Select(t => (ThingTrade)t.Clone()).ToList() ?? new List<ThingTrade>();
+        }
+
+        private sealed class BarterOfferEnvelope
+        {
+            public PlayerServer Recipient { get; set; }
+            public ModelMailBarterOffer Packet { get; set; }
         }
     }
 }

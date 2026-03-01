@@ -3,6 +3,7 @@ using OCUnion;
 using RimWorld;
 using RimWorld.Planet;
 using RimWorldOnlineCity.GameClasses.Harmony;
+using RimWorldOnlineCity.UI;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -631,6 +632,23 @@ namespace RimWorldOnlineCity
             }
             return fmoTrade;
         }
+        
+        /// <summary>
+        /// Пункт меню бартера с игроком в CaravanOnline (караван или поселение).
+        /// </summary>
+        public static FloatMenuOption Barter_GetFloatMenu(CaravanOnline that, Action actionFloatMenu)
+        {
+            bool disTrade = GameUtils.IsProtectingNovice();
+            var text = "OCity_Dialog_Exchenge_Counterproposal".Translate().ToString()
+                + " " + that.OnlinePlayerLogin + " " + that.OnlineName
+                + (disTrade ? " (" + "OCity_Caravan_Abort".Translate().ToString() + " " + MainHelper.MinCostForTrade.ToString() + ")" : "");
+            var fmoTrade = new FloatMenuOption(text, actionFloatMenu, MenuOptionPriority.Default, null, null, 0f, null, that);
+            if (disTrade)
+            {
+                fmoTrade.Disabled = true;
+            }
+            return fmoTrade;
+        }
 
         /// <summary>
         /// Совершение действия передачи товаров другому игроку
@@ -652,7 +670,23 @@ namespace RimWorldOnlineCity
                 , () =>
                 {
                     ExchangeOfGoods_DoAction(destination, source, form.GetSelect());
-                });
+            });
+            Find.WindowStack.Add(form);
+        }
+        
+        /// <summary>
+        /// Совершение действия бартера с другим игроком через приватный ордер.
+        /// </summary>
+        public static void Barter_DoAction(CaravanOnline destination, Caravan source)
+        {
+            if (destination?.OnlineWObject == null || source == null)
+            {
+                Log.Error("OCity_Caravan_LOGNoData".Translate());
+                return;
+            }
+
+            var form = new Dialog_Exchenge(source);
+            form.PrepareBarterWith(destination);
             Find.WindowStack.Add(form);
         }
 

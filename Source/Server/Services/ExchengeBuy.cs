@@ -27,6 +27,15 @@ namespace ServerOnlineCity.Services
         {
             lock (context.Player)
             {
+                if (buy == null || buy.OrderId <= 0 || buy.Count <= 0)
+                {
+                    return new ModelStatus()
+                    {
+                        Status = 3,
+                        Message = "Invalid order or count"
+                    };
+                }
+
                 var data = Repository.GetData;
 
                 lock (data)
@@ -37,6 +46,18 @@ namespace ServerOnlineCity.Services
                         {
                             Status = 1,
                             Message = "Order not found"
+                        };
+                    }
+
+                    if (order.Owner.Login != context.Player.Public.Login
+                        && order.PrivatPlayers != null
+                        && order.PrivatPlayers.Count > 0
+                        && !order.PrivatPlayers.Any(p => p.Login == context.Player.Public.Login))
+                    {
+                        return new ModelStatus()
+                        {
+                            Status = 4,
+                            Message = "Access denied"
                         };
                     }
 

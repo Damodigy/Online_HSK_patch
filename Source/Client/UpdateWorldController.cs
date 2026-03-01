@@ -33,6 +33,7 @@ namespace RimWorldOnlineCity
         private static List<WorldObjectEntry> LastSendMyWorldObjects { get; set; }
         private static List<WorldObjectOnline> LastWorldObjectOnline { get; set; }
         private static List<FactionOnline> LastFactionOnline { get; set; }
+        private static Dictionary<int, WorldObjectOnline> OnlineWorldDescriptorsByTile { get; set; }
 
         private static Dictionary<int, WorldObjectBaseOnline> LastCatchAllWorldObjectsByID;
 
@@ -361,14 +362,10 @@ namespace RimWorldOnlineCity
             //пришла посылка от каравана другого игрока
             if (fromServ.Mails != null && fromServ.Mails.Count > 0)
             {
-                LongEventHandler.QueueLongEvent(delegate
-                //LongEventHandler.ExecuteWhenFinished(delegate
+                for (int i = 0; i < fromServ.Mails.Count; i++)
                 {
-                    foreach (var mail in fromServ.Mails)
-                    {
-                        MailController.MailArrived(mail);
-                    }
-                }, "", false, null);
+                    MailController.MailArrived(fromServ.Mails[i]);
+                }
             }
         }
 
@@ -1028,6 +1025,7 @@ namespace RimWorldOnlineCity
             WorldObjectEntrys = new Dictionary<int, WorldObjectEntry>();
             ConverterServerId = new Dictionary<long, int>();
             WorldObject_TradeOrdersOnline = new HashSet<TradeOrdersOnline>();
+            OnlineWorldDescriptorsByTile = new Dictionary<int, WorldObjectOnline>();
             ToDelete = null;
             LastSendMyWorldObjects = null;
             LastCatchAllWorldObjectsByID = null;
@@ -1038,15 +1036,35 @@ namespace RimWorldOnlineCity
         {
             try
             {
+                // Для серверного рассказчика сервер может присылать полный снимок (WObjectOnlineList),
+                // даже без дельты ToAdd/ToDelete.
+                if (fromServ.WObjectOnlineList != null && fromServ.WObjectOnlineList.Count > 0)
+                {
+                    RefreshOnlineDescriptorsSnapshot(fromServ.WObjectOnlineList);
+                    ApplyNonPlayerWorldObjectSnapshot(fromServ.WObjectOnlineList);
+                    LastWorldObjectOnline = fromServ.WObjectOnlineList
+                        .Where(w => w != null)
+                        .ToList();
+                    return;
+                }
+
                 if (fromServ.WObjectOnlineToDelete != null && fromServ.WObjectOnlineToDelete.Count > 0)
                 {
+                    RemoveOnlineDescriptors(fromServ.WObjectOnlineToDelete);
                     var objectToDelete = Find.WorldObjects.AllWorldObjects.Where(wo => wo is Settlement)
                                                      .Where(wo => wo.HasName && !wo.Faction.IsPlayer)
                                                      .Where(o => fromServ.WObjectOnlineToDelete.Any(fs => ValidateOnlineWorldObject(fs, o))).ToList();
+                    var worldChanged = false;
                     objectToDelete.ForEach(o => {
-                        Find.WorldObjects.SettlementAt(o.Tile).Destroy();
-                        Find.World.WorldUpdate();
+                        var settlementAtTile = Find.WorldObjects.SettlementAt(o.Tile);
+                        if (settlementAtTile == null) return;
+                        settlementAtTile.Destroy();
+                        worldChanged = true;
                     });
+                    if (worldChanged)
+                    {
+                        Find.World.WorldUpdate();
+                    }
                     if (LastWorldObjectOnline != null && LastWorldObjectOnline.Count > 0)
                     {
                         LastWorldObjectOnline.RemoveAll(WOnline => objectToDelete.Any(o => ValidateOnlineWorldObject(WOnline, o)));
@@ -1055,6 +1073,7 @@ namespace RimWorldOnlineCity
 
                 if (fromServ.WObjectOnlineToAdd != null && fromServ.WObjectOnlineToAdd.Count > 0)
                 {
+                    MergeOnlineDescriptors(fromServ.WObjectOnlineToAdd);
                     for (var i = 0; i < fromServ.WObjectOnlineToAdd.Count; i++)
                     {
                         if (!Find.WorldObjects.AnySettlementAt(fromServ.WObjectOnlineToAdd[i].Tile))
@@ -1091,6 +1110,311 @@ namespace RimWorldOnlineCity
             }
         }
 
+        private static void ApplyNonPlayerWorldObjectSnapshot(List<WorldObjectOnline> worldObjectsOnline)
+        {
+            if (worldObjectsOnline == null || worldObjectsOnline.Count == 0) return;
+            if (Find.WorldGrid == null) return;
+            var tilesCount = Find.WorldGrid.TilesCount;
+
+            var desiredByTile = worldObjectsOnline
+                .Where(w => w != null && w.Tile > 0 && w.Tile < tilesCount)
+                .GroupBy(w => w.Tile)
+                .ToDictionary(g => g.Key, g => g.First());
+            if (desiredByTile.Count == 0) return;
+
+            var worldChanged = false;
+            var existingSettlements = Find.WorldObjects.AllWorldObjects
+                .OfType<Settlement>()
+                .Where(wo => wo.HasName && !(wo.Faction?.IsPlayer ?? false))
+                .ToList();
+
+            // Обновляем или удаляем существующие неписевые поселения.
+            for (int i = 0; i < existingSettlements.Count; i++)
+            {
+                var settlement = existingSettlements[i];
+                if (settlement == null) continue;
+
+                if (!desiredByTile.TryGetValue(settlement.Tile, out var descriptor))
+                {
+                    Find.WorldObjects.Remove(settlement);
+                    worldChanged = true;
+                    continue;
+                }
+
+                ApplyOnlineSettlementData(settlement, descriptor);
+                desiredByTile.Remove(settlement.Tile);
+            }
+
+            // Добавляем недостающие точки.
+            foreach (var descriptor in desiredByTile.Values)
+            {
+                if (descriptor == null || descriptor.Tile <= 0) continue;
+
+                if (Find.WorldObjects.AnySettlementAt(descriptor.Tile))
+                {
+                    var existingAtTile = Find.WorldObjects.SettlementAt(descriptor.Tile);
+                    if (existingAtTile != null && !(existingAtTile.Faction?.IsPlayer ?? false))
+                    {
+                        ApplyOnlineSettlementData(existingAtTile, descriptor);
+                        continue;
+                    }
+
+                    Loger.Log("Can't Add Settlement. Tile is already occupied " + existingAtTile, Loger.LogLevel.WARNING);
+                    continue;
+                }
+
+                if (TryCreateOnlineSettlement(descriptor))
+                {
+                    worldChanged = true;
+                }
+            }
+
+            if (worldChanged)
+            {
+                Find.World.WorldUpdate();
+            }
+        }
+
+        private static bool TryCreateOnlineSettlement(WorldObjectOnline descriptor)
+        {
+            if (Find.WorldGrid == null) return false;
+            if (descriptor == null) return false;
+            if (descriptor.Tile <= 0 || descriptor.Tile >= Find.WorldGrid.TilesCount)
+            {
+                Loger.Log("Skipping ToAdd Settlement: invalid tile " + descriptor.Tile, Loger.LogLevel.WARNING);
+                return false;
+            }
+
+            var faction = ResolveOnlineWorldObjectFaction(descriptor);
+            if (faction == null)
+            {
+                Log.Warning("Faction is missing or not found : " + descriptor?.FactionGroup + " / " + descriptor?.FactionDef);
+                Loger.Log("Skipping ToAdd Settlement : " + descriptor?.Name);
+                return false;
+            }
+
+            var npcBase = (Settlement)WorldObjectMaker.MakeWorldObject(WorldObjectDefOf.Settlement);
+            npcBase.SetFaction(faction);
+            npcBase.Tile = descriptor.Tile;
+            npcBase.Name = string.IsNullOrWhiteSpace(descriptor.Name)
+                ? ("Settlement " + descriptor.Tile)
+                : descriptor.Name;
+            Find.WorldObjects.Add(npcBase);
+            return true;
+        }
+
+        private static void ApplyOnlineSettlementData(Settlement settlement, WorldObjectOnline descriptor)
+        {
+            if (settlement == null || descriptor == null) return;
+
+            var faction = ResolveOnlineWorldObjectFaction(descriptor);
+            if (faction != null && settlement.Faction != faction)
+            {
+                settlement.SetFaction(faction);
+            }
+
+            if (!string.IsNullOrWhiteSpace(descriptor.Name) && settlement.Name != descriptor.Name)
+            {
+                settlement.Name = descriptor.Name;
+            }
+        }
+
+        private static Faction ResolveOnlineWorldObjectFaction(WorldObjectOnline descriptor)
+        {
+            if (descriptor == null) return null;
+
+            var factions = Find.FactionManager.AllFactionsListForReading
+                .Where(f => f != null && !f.IsPlayer)
+                .ToList();
+            if (factions.Count == 0) return null;
+
+            var settlementBackedFactions = GetSettlementBackedFactions(factions);
+            var preferredPool = settlementBackedFactions.Count > 0
+                ? settlementBackedFactions
+                : factions;
+            var requiresHostile = descriptor.ServerGenerated && RequiresHostileFaction(descriptor);
+            var suitablePreferredPool = preferredPool
+                .Where(f => IsFactionSuitableForStorySettlement(f, requiresHostile))
+                .ToList();
+            var suitableAllPool = factions
+                .Where(f => IsFactionSuitableForStorySettlement(f, requiresHostile))
+                .ToList();
+
+            Faction faction = null;
+            if (descriptor.loadID > 0)
+            {
+                faction = factions.FirstOrDefault(f => f.loadID == descriptor.loadID);
+            }
+            if (faction == null && !string.IsNullOrWhiteSpace(descriptor.FactionDef))
+            {
+                var defName = descriptor.FactionDef.Trim();
+                faction = factions.FirstOrDefault(f =>
+                    string.Equals(f.def?.defName, defName, StringComparison.OrdinalIgnoreCase));
+            }
+            if (faction == null && !string.IsNullOrWhiteSpace(descriptor.FactionGroup))
+            {
+                var label = descriptor.FactionGroup.Trim();
+                faction = factions.FirstOrDefault(f =>
+                    string.Equals(f.def?.LabelCap, label, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(f.Name, label, StringComparison.OrdinalIgnoreCase));
+            }
+
+            // Если сервер явно задал фракцию и мы ее нашли — не переопределяем.
+            if (faction != null)
+            {
+                return faction;
+            }
+
+            if (descriptor.ServerGenerated)
+            {
+                if (!IsFactionSuitableForStorySettlement(faction, requiresHostile))
+                {
+                    var fallbackPool = suitablePreferredPool.Count > 0
+                        ? suitablePreferredPool
+                        : suitableAllPool;
+                    if (fallbackPool.Count > 0)
+                    {
+                        faction = PickDeterministicFaction(fallbackPool, descriptor);
+                        Loger.Log("ResolveOnlineWorldObjectFaction hostile fallback "
+                            + $"{descriptor.FactionGroup}/{descriptor.FactionDef} -> {faction?.def?.defName}"
+                            , Loger.LogLevel.WARNING);
+                    }
+                }
+                else if (faction != null
+                    && settlementBackedFactions.Count > 0
+                    && !settlementBackedFactions.Any(f => f.loadID == faction.loadID))
+                {
+                    var betterPool = suitablePreferredPool.Count > 0
+                        ? suitablePreferredPool
+                        : suitableAllPool;
+                    var better = PickDeterministicFaction(betterPool, descriptor);
+                    if (better != null)
+                    {
+                        faction = better;
+                    }
+                }
+            }
+
+            // Для серверных событий и несовпадений DefName допускаем fallback на подходящую NPC-фракцию.
+            if (faction == null)
+            {
+                var fallbackPool = descriptor.ServerGenerated
+                    ? (suitablePreferredPool.Count > 0 ? suitablePreferredPool : suitableAllPool)
+                    : preferredPool;
+                faction = PickDeterministicFaction(fallbackPool, descriptor);
+                if (faction == null && !descriptor.ServerGenerated)
+                {
+                    faction = PickDeterministicFaction(factions, descriptor);
+                }
+                if (faction != null)
+                {
+                    Loger.Log("ResolveOnlineWorldObjectFaction fallback "
+                        + $"{descriptor.FactionGroup}/{descriptor.FactionDef} -> {faction?.def?.defName}"
+                        , Loger.LogLevel.WARNING);
+                }
+            }
+
+            return faction;
+        }
+
+        private static List<Faction> GetSettlementBackedFactions(List<Faction> factions)
+        {
+            if (factions == null || factions.Count == 0) return new List<Faction>();
+
+            var settlementLoadIds = new HashSet<int>();
+            var settlementDefNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var settlements = Find.WorldObjects.AllWorldObjects
+                .OfType<Settlement>()
+                .Where(s => s?.Faction != null && !s.Faction.IsPlayer)
+                .ToList();
+
+            for (int i = 0; i < settlements.Count; i++)
+            {
+                var faction = settlements[i].Faction;
+                if (faction == null) continue;
+                if (faction.loadID > 0) settlementLoadIds.Add(faction.loadID);
+                var defName = faction.def?.defName;
+                if (!string.IsNullOrWhiteSpace(defName))
+                {
+                    settlementDefNames.Add(defName.Trim());
+                }
+            }
+
+            return factions
+                .Where(f => (f.loadID > 0 && settlementLoadIds.Contains(f.loadID))
+                    || (!string.IsNullOrWhiteSpace(f.def?.defName) && settlementDefNames.Contains(f.def.defName.Trim())))
+                .ToList();
+        }
+
+        private static bool RequiresHostileFaction(WorldObjectOnline descriptor)
+        {
+            if (descriptor == null || !descriptor.ServerGenerated) return false;
+            var storyType = (descriptor.StoryType ?? string.Empty).Trim().ToLowerInvariant();
+            return storyType != "trade_camp";
+        }
+
+        private static bool IsHostileToPlayer(Faction faction)
+        {
+            if (faction == null) return false;
+            if (faction.IsPlayer) return false;
+            var player = Faction.OfPlayer;
+            if (player == null) return false;
+            return faction.HostileTo(player);
+        }
+
+        private static bool IsFactionSuitableForStorySettlement(Faction faction, bool requiresHostile)
+        {
+            if (faction == null || faction.IsPlayer) return false;
+            if (requiresHostile && !IsHostileToPlayer(faction)) return false;
+            if (faction.def == null) return false;
+            if (string.IsNullOrWhiteSpace(faction.def.settlementTexturePath)) return false;
+
+            var groupMakers = faction.def.pawnGroupMakers;
+            if (groupMakers == null || groupMakers.Count == 0) return false;
+
+            for (int i = 0; i < groupMakers.Count; i++)
+            {
+                var maker = groupMakers[i];
+                if (maker == null) continue;
+                if (maker.kindDef == PawnGroupKindDefOf.Settlement) return true;
+                if (maker.kindDef == PawnGroupKindDefOf.Combat) return true;
+            }
+
+            return false;
+        }
+
+        private static Faction PickDeterministicFaction(List<Faction> pool, WorldObjectOnline descriptor)
+        {
+            if (pool == null || pool.Count == 0) return null;
+            var ordered = pool
+                .Where(f => f != null && !f.IsPlayer)
+                .OrderBy(f => f.def?.defName ?? string.Empty)
+                .ThenBy(f => f.Name ?? string.Empty)
+                .ThenBy(f => f.loadID)
+                .ToList();
+            if (ordered.Count == 0) return null;
+
+            var key = (descriptor?.FactionDef ?? descriptor?.FactionGroup ?? descriptor?.Name ?? descriptor?.Tile.ToString() ?? string.Empty).Trim();
+            var hash = StableHash(key);
+            return ordered[hash % ordered.Count];
+        }
+
+        private static int StableHash(string value)
+        {
+            unchecked
+            {
+                var hash = 23;
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    for (var i = 0; i < value.Length; i++)
+                    {
+                        hash = hash * 31 + value[i];
+                    }
+                }
+                return hash & int.MaxValue;
+            }
+        }
+
         public static WorldObjectOnline GetWorldObjects(WorldObject obj)
         {
             var worldObject = new WorldObjectOnline();
@@ -1100,6 +1424,95 @@ namespace RimWorldOnlineCity
             worldObject.FactionDef = obj?.Faction?.def?.defName;
             worldObject.loadID = obj.Faction.loadID;
             return worldObject;
+        }
+
+        public static WorldObjectOnline GetOnlineWorldDescriptorByTile(int tile)
+        {
+            if (tile <= 0) return null;
+            if (OnlineWorldDescriptorsByTile == null || OnlineWorldDescriptorsByTile.Count == 0) return null;
+            if (!OnlineWorldDescriptorsByTile.TryGetValue(tile, out var descriptor)) return null;
+            return CloneOnlineWorldDescriptor(descriptor);
+        }
+
+        public static bool EnsureOnlineSettlementAtTile(int tile)
+        {
+            if (tile <= 0) return false;
+
+            var descriptor = GetOnlineWorldDescriptorByTile(tile);
+            if (descriptor == null) return false;
+
+            var existing = Find.WorldObjects?.SettlementAt(tile);
+            if (existing != null)
+            {
+                ApplyOnlineSettlementData(existing, descriptor);
+                return true;
+            }
+
+            var created = TryCreateOnlineSettlement(descriptor);
+            if (created)
+            {
+                Find.World?.WorldUpdate();
+            }
+            return created;
+        }
+
+        private static void RefreshOnlineDescriptorsSnapshot(List<WorldObjectOnline> descriptors)
+        {
+            if (OnlineWorldDescriptorsByTile == null) OnlineWorldDescriptorsByTile = new Dictionary<int, WorldObjectOnline>();
+            OnlineWorldDescriptorsByTile.Clear();
+            if (descriptors == null || descriptors.Count == 0) return;
+
+            for (int i = 0; i < descriptors.Count; i++)
+            {
+                var item = descriptors[i];
+                if (item == null || item.Tile <= 0) continue;
+                OnlineWorldDescriptorsByTile[item.Tile] = CloneOnlineWorldDescriptor(item);
+            }
+        }
+
+        private static void MergeOnlineDescriptors(List<WorldObjectOnline> descriptors)
+        {
+            if (OnlineWorldDescriptorsByTile == null) OnlineWorldDescriptorsByTile = new Dictionary<int, WorldObjectOnline>();
+            if (descriptors == null || descriptors.Count == 0) return;
+
+            for (int i = 0; i < descriptors.Count; i++)
+            {
+                var item = descriptors[i];
+                if (item == null || item.Tile <= 0) continue;
+                OnlineWorldDescriptorsByTile[item.Tile] = CloneOnlineWorldDescriptor(item);
+            }
+        }
+
+        private static void RemoveOnlineDescriptors(List<WorldObjectOnline> descriptors)
+        {
+            if (OnlineWorldDescriptorsByTile == null || OnlineWorldDescriptorsByTile.Count == 0) return;
+            if (descriptors == null || descriptors.Count == 0) return;
+
+            for (int i = 0; i < descriptors.Count; i++)
+            {
+                var item = descriptors[i];
+                if (item == null || item.Tile <= 0) continue;
+                OnlineWorldDescriptorsByTile.Remove(item.Tile);
+            }
+        }
+
+        private static WorldObjectOnline CloneOnlineWorldDescriptor(WorldObjectOnline source)
+        {
+            if (source == null) return null;
+            return new WorldObjectOnline()
+            {
+                Name = source.Name,
+                Tile = source.Tile,
+                FactionGroup = source.FactionGroup,
+                FactionDef = source.FactionDef,
+                loadID = source.loadID,
+                ServerGenerated = source.ServerGenerated,
+                ExpireAtUtc = source.ExpireAtUtc,
+                StoryType = source.StoryType,
+                StoryLevel = source.StoryLevel,
+                StoryNextActionUtc = source.StoryNextActionUtc,
+                StorySeed = source.StorySeed
+            };
         }
 
         private static bool ValidateOnlineWorldObject(WorldObjectOnline WObjectOnline1, WorldObject WObjectOnline2)
@@ -1118,57 +1531,196 @@ namespace RimWorldOnlineCity
         {
             try
             {
+                var worldChanged = false;
+
                 if (fromServ.FactionOnlineList != null && fromServ.FactionOnlineList.Count > 0)
                 {
                     OCFactionManager.UpdateFactionIDS(fromServ.FactionOnlineList);
                 }
 
-                // ! WIP Factions
                 if (fromServ.FactionOnlineToDelete != null && fromServ.FactionOnlineToDelete.Count > 0)
                 {
                     var factionToDelete = Find.FactionManager.AllFactionsListForReading.Where(f => !f.IsPlayer)
-                        .Where(obj => fromServ.FactionOnlineToDelete.Any(fs => ValidateFaction(fs, obj))).ToList();
+                        .Where(obj => fromServ.FactionOnlineToDelete.Any(fs => MatchesFactionDescriptor(fs, obj)))
+                        .ToList();
 
                     for (var i = 0; i < factionToDelete.Count; i++)
                     {
                         OCFactionManager.DeleteFaction(factionToDelete[i]);
+                        worldChanged = true;
                     }
 
                     if (LastFactionOnline != null && LastFactionOnline.Count > 0)
                     {
-                        LastFactionOnline.RemoveAll(FOnline => factionToDelete.Any(obj => ValidateFaction(FOnline, obj)));
+                        LastFactionOnline.RemoveAll(fOnline => factionToDelete.Any(obj => MatchesFactionDescriptor(fOnline, obj)));
                     }
                 }
 
-                if (fromServ.FactionOnlineToAdd != null && fromServ.FactionOnlineToAdd.Count > 0)
+                var snapshotDescriptors = BuildFactionSnapshot(fromServ);
+                for (var i = 0; i < snapshotDescriptors.Count; i++)
                 {
-                    for (var i = 0; i < fromServ.FactionOnlineToAdd.Count; i++)
-                    {
-                        try
-                        {
-                            var existingFaction = Find.FactionManager.AllFactionsListForReading.Where(f => ValidateFaction(fromServ.FactionOnlineToAdd[i], f)).ToList();
-                            if (existingFaction.Count == 0)
-                            {
-                                OCFactionManager.AddNewFaction(fromServ.FactionOnlineToAdd[i]);
-                            }
-                            else
-                            {
-                                Loger.Log("Failed to add faction. Faction already exists. > " + fromServ.FactionOnlineToAdd[i].LabelCap, Loger.LogLevel.ERROR);
-                            }
+                    var descriptor = snapshotDescriptors[i];
+                    if (descriptor == null) continue;
 
-                        }
-                        catch
+                    try
+                    {
+                        var existingFaction = FindFactionByDescriptor(descriptor);
+                        if (existingFaction != null)
                         {
-                            Loger.Log("Error faction to add LabelCap >> " + fromServ.FactionOnlineToAdd[i].LabelCap, Loger.LogLevel.ERROR);
-                            Loger.Log("Error faction to add DefName >> " + fromServ.FactionOnlineToAdd[i].DefName, Loger.LogLevel.ERROR);
+                            if (existingFaction.loadID <= 0 && descriptor.loadID > 0)
+                            {
+                                existingFaction.loadID = descriptor.loadID;
+                            }
+                            continue;
                         }
+
+                        if (!CanInstantiateFaction(descriptor))
+                        {
+                            Loger.Log("Skip add faction. FactionDef is missing: "
+                                + descriptor.LabelCap + " / " + descriptor.DefName
+                                , Loger.LogLevel.WARNING);
+                            continue;
+                        }
+
+                        OCFactionManager.AddNewFaction(descriptor);
+                        worldChanged = true;
                     }
+                    catch
+                    {
+                        Loger.Log("Error faction to add LabelCap >> " + descriptor.LabelCap, Loger.LogLevel.ERROR);
+                        Loger.Log("Error faction to add DefName >> " + descriptor.DefName, Loger.LogLevel.ERROR);
+                    }
+                }
+
+                if (fromServ.FactionOnlineList != null && fromServ.FactionOnlineList.Count > 0)
+                {
+                    OCFactionManager.UpdateFactionIDS(fromServ.FactionOnlineList);
+                }
+
+                if (worldChanged)
+                {
+                    Find.World?.WorldUpdate();
                 }
             }
             catch (Exception e)
             {
                 Log.Error("OnlineCity: Error Apply new faction to world >> " + e);
             }
+        }
+
+        private static List<FactionOnline> BuildFactionSnapshot(ModelPlayToClient fromServ)
+        {
+            var raw = new List<FactionOnline>();
+            if (fromServ?.FactionOnlineList != null)
+            {
+                raw.AddRange(fromServ.FactionOnlineList.Where(d => d != null));
+            }
+            if (fromServ?.FactionOnlineToAdd != null)
+            {
+                raw.AddRange(fromServ.FactionOnlineToAdd.Where(d => d != null));
+            }
+
+            return raw
+                .Where(d => !string.IsNullOrWhiteSpace(d.DefName)
+                    || !string.IsNullOrWhiteSpace(d.LabelCap)
+                    || d.loadID > 0)
+                .GroupBy(GetFactionDescriptorKey, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(d => d.loadID).FirstOrDefault())
+                .Where(d => d != null)
+                .ToList();
+        }
+
+        private static string GetFactionDescriptorKey(FactionOnline descriptor)
+        {
+            if (descriptor == null) return string.Empty;
+
+            if (descriptor.loadID > 0)
+            {
+                return "id:" + descriptor.loadID;
+            }
+
+            var defName = descriptor.DefName?.Trim() ?? string.Empty;
+            var label = descriptor.LabelCap?.Trim() ?? string.Empty;
+            return (defName + "|" + label).ToLowerInvariant();
+        }
+
+        private static bool CanInstantiateFaction(FactionOnline descriptor)
+        {
+            if (descriptor == null) return false;
+            if (string.IsNullOrWhiteSpace(descriptor.DefName)) return false;
+            return DefDatabase<FactionDef>.GetNamedSilentFail(descriptor.DefName.Trim()) != null;
+        }
+
+        private static Faction FindFactionByDescriptor(FactionOnline descriptor)
+        {
+            if (descriptor == null) return null;
+
+            var factions = Find.FactionManager.AllFactionsListForReading
+                .Where(f => f != null && !f.IsPlayer)
+                .ToList();
+            if (factions.Count == 0) return null;
+
+            if (descriptor.loadID > 0)
+            {
+                var byId = factions.FirstOrDefault(f => f.loadID == descriptor.loadID);
+                if (byId != null) return byId;
+            }
+
+            var defName = descriptor.DefName?.Trim();
+            if (!string.IsNullOrWhiteSpace(defName))
+            {
+                var byDefAndLabel = factions.FirstOrDefault(f =>
+                    string.Equals(f.def?.defName, defName, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(f.def?.LabelCap, descriptor.LabelCap?.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (byDefAndLabel != null) return byDefAndLabel;
+
+                var byDef = factions.FirstOrDefault(f =>
+                    string.Equals(f.def?.defName, defName, StringComparison.OrdinalIgnoreCase));
+                if (byDef != null) return byDef;
+            }
+
+            var label = descriptor.LabelCap?.Trim();
+            if (!string.IsNullOrWhiteSpace(label))
+            {
+                var byLabel = factions.FirstOrDefault(f =>
+                    string.Equals(f.def?.LabelCap, label, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(f.Name, label, StringComparison.OrdinalIgnoreCase));
+                if (byLabel != null) return byLabel;
+            }
+
+            return null;
+        }
+
+        private static bool MatchesFactionDescriptor(FactionOnline descriptor, Faction faction)
+        {
+            if (descriptor == null || faction == null || faction.IsPlayer) return false;
+            if (ValidateFaction(descriptor, faction)) return true;
+
+            if (descriptor.loadID > 0 && faction.loadID == descriptor.loadID)
+            {
+                return true;
+            }
+
+            var defName = descriptor.DefName?.Trim();
+            var label = descriptor.LabelCap?.Trim();
+            if (!string.IsNullOrWhiteSpace(defName)
+                && string.Equals(faction.def?.defName, defName, StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(label))
+                {
+                    return true;
+                }
+                return string.Equals(faction.def?.LabelCap, label, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(faction.Name, label, StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (!string.IsNullOrWhiteSpace(label))
+            {
+                return string.Equals(faction.def?.LabelCap, label, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(faction.Name, label, StringComparison.OrdinalIgnoreCase);
+            }
+
+            return false;
         }
 
         public static FactionOnline GetFactions(Faction obj)

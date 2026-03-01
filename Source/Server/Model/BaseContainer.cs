@@ -84,6 +84,12 @@ namespace ServerOnlineCity.Model
         public List<WorldObjectOnline> WorldObjectOnlineList { get; set; }
         public List<FactionOnline> FactionOnlineList { get; set; }
 
+        // Storyteller data
+        public List<ServerStoryEvent> StoryEvents { get; set; }
+        public long MaxStoryEventId { get; set; }
+        public List<int> StorytellerKnownTiles { get; set; }
+        public DateTime StorytellerLastRunUtc { get; set; }
+
         [NonSerialized]
         public bool EverybodyLogoff;
 
@@ -157,6 +163,9 @@ namespace ServerOnlineCity.Model
             VersionNum = MainHelper.VersionNum;
             WorldObjectOnlineList = new List<WorldObjectOnline>();
             FactionOnlineList = new List<FactionOnline>();
+            StoryEvents = new List<ServerStoryEvent>();
+            StorytellerKnownTiles = new List<int>();
+            StorytellerLastRunUtc = DateTime.MinValue;
 
             PostLoad();
         }
@@ -174,6 +183,8 @@ namespace ServerOnlineCity.Model
             if (StatesRankingLast == null) StatesRankingLast = new List<string>();
             if (WorldObjectOnlineList == null) WorldObjectOnlineList = new List<WorldObjectOnline>();
             if (FactionOnlineList == null) FactionOnlineList = new List<FactionOnline>();
+            if (StoryEvents == null) StoryEvents = new List<ServerStoryEvent>();
+            if (StorytellerKnownTiles == null) StorytellerKnownTiles = new List<int>();
 
             // Преобразования при обновлениях {
 

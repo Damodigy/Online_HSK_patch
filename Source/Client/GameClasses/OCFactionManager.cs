@@ -30,13 +30,42 @@ namespace GameClasses
 
 		public static void AddNewFaction(FactionOnline factionOnline)
         {
-			FactionDef facDef = DefDatabase<FactionDef>.GetNamed(factionOnline.DefName);
+			if (factionOnline == null) return;
+
+			var factionList = Find.FactionManager.AllFactionsListForReading;
+			var existing = factionList.FirstOrDefault(f =>
+				!f.IsPlayer
+				&& ((factionOnline.loadID > 0 && f.loadID == factionOnline.loadID)
+					|| (string.Equals(f.def?.defName, factionOnline.DefName?.Trim(), StringComparison.OrdinalIgnoreCase)
+						&& string.Equals(f.def?.LabelCap, factionOnline.LabelCap?.Trim(), StringComparison.OrdinalIgnoreCase))));
+			if (existing != null)
+			{
+				if (existing.loadID <= 0 && factionOnline.loadID > 0)
+				{
+					existing.loadID = factionOnline.loadID;
+				}
+				return;
+			}
+
+			var defName = factionOnline.DefName?.Trim();
+			FactionDef facDef = string.IsNullOrWhiteSpace(defName)
+				? null
+				: DefDatabase<FactionDef>.GetNamedSilentFail(defName);
+			if (facDef == null)
+			{
+				Loger.Log("Skip add faction. Missing FactionDef: " + factionOnline.DefName, Loger.LogLevel.WARNING);
+				return;
+			}
+
 			Faction faction = new Faction();
 			faction.def = facDef;
-			faction.loadID = factionOnline.loadID;
+			faction.loadID = Math.Max(0, factionOnline.loadID);
 			faction.colorFromSpectrum = FactionGenerator.NewRandomColorFromSpectrum(faction);
 
-			faction.Name = factionOnline.Name;
+			var fallbackName = facDef.LabelCap.ToString();
+			faction.Name = string.IsNullOrWhiteSpace(factionOnline.Name)
+				? (string.IsNullOrWhiteSpace(factionOnline.LabelCap) ? fallbackName : factionOnline.LabelCap.Trim())
+				: factionOnline.Name.Trim();
 			//faction.centralMelanin = Rand.Value;
 			foreach (Faction current in Find.FactionManager.AllFactionsListForReading)
 			{

@@ -132,6 +132,8 @@
     <Compile Include="GameClasses\Harmony\GameLog.cs" />
     <Compile Include="GameClasses\Harmony\GamePresetFiles.cs" />
     <Compile Include="GameClasses\Harmony\GameSaveLoadInMem.cs" />
+    <Compile Include="GameClasses\Harmony\CaravanAttackSettlementPatch.cs" />
+    <Compile Include="GameClasses\Harmony\StoryPointDefensePatch.cs" />
     <Compile Include="GameClasses\Incident\IncidentAcid.cs" />
     <Compile Include="GameClasses\Incident\IncidentAcid_NEW.cs" />
     <Compile Include="GameClasses\Incident\IncidentBombing.cs" />
@@ -186,8 +188,11 @@
     <Compile Include="GameClasses\ModDefOf.cs" />
     <Compile Include="GameClasses\StartPoint.cs" />
     <Compile Include="UI\Dialog_BaseOnlineButton.cs" />
+    <Compile Include="UI\Dialog_BarterOffer.cs" />
     <Compile Include="UI\Dialog_Exchenge.cs" />
     <Compile Include="UI\Dialog_InfoPlayer.cs" />
+    <Compile Include="UI\Dialog_StoryLog.cs" />
+    <Compile Include="UI\Letter_StoryLog.cs" />
     <Compile Include="UI\Dialog_InfoState.cs" />
     <Compile Include="UI\Dialog_InputImage.cs" />
     <Compile Include="UI\Dialog_Scenario.cs" />
@@ -206,6 +211,7 @@
     <Compile Include="UI\GeneralTexture.cs" />
     <Compile Include="UI\GeneralTextureCatalogEmoji.cs" />
     <Compile Include="UI\PanelChat.cs" />
+    <Compile Include="UI\PanelDebug.cs" />
     <Compile Include="UI\PanelInfoPlayer.cs" />
     <Compile Include="UI\PanelInfoState.cs" />
     <Compile Include="UI\PanelProfilePlayer.cs" />

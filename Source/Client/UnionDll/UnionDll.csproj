@@ -98,8 +98,10 @@
     <Compile Include="Transfer\ModelMails\ModelMail.cs" />
     <Compile Include="Transfer\ModelMails\ModelMailAttackCancel.cs" />
     <Compile Include="Transfer\ModelMails\ModelMailAttackTechnicalVictory.cs" />
+    <Compile Include="Transfer\ModelMails\ModelMailBarterOffer.cs" />
     <Compile Include="Transfer\ModelMails\ModelMailDeleteWO.cs" />
     <Compile Include="Transfer\ModelMails\ModelMailMessage.cs" />
+    <Compile Include="Transfer\ModelMails\ModelMailStoryLog.cs" />
     <Compile Include="Transfer\ModelMails\ModelMailStartIncident.cs" />
     <Compile Include="Transfer\ModelName.cs" />
     <Compile Include="Transfer\ModelOrderLoadRequest.cs" />
@@ -118,6 +120,7 @@
     <Compile Include="Transfer\Model\State.cs" />
     <Compile Include="Transfer\Model\StateInfo.cs" />
     <Compile Include="Transfer\Model\StatePosition.cs" />
+    <Compile Include="Transfer\Model\StoryLogEntry.cs" />
     <Compile Include="Transfer\Model\TradeOrderShort.cs" />
     <Compile Include="Transfer\Model\TradeThingStorage.cs" />
     <Compile Include="Transfer\Model\TradeWorldObjectEntry.cs" />

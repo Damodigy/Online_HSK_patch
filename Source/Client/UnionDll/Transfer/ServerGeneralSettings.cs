@@ -75,6 +75,327 @@ namespace OCUnion
         public bool EquableWorldObjects { get; set; }
 
         /// <summary>
+        /// Включить серверного рассказчика мира (глобальные точки/события на планете).
+        /// </summary>
+        public bool StorytellerEnable { get; set; }
+
+        /// <summary>
+        /// Период тика серверного рассказчика в секундах.
+        /// </summary>
+        public int StorytellerTickIntervalSeconds { get; set; }
+
+        /// <summary>
+        /// Базовый шанс генерации новой глобальной точки за тик, в процентах.
+        /// </summary>
+        public int StorytellerSpawnChancePercent { get; set; }
+
+        /// <summary>
+        /// Максимум одновременно существующих серверно-сгенерированных глобальных точек.
+        /// </summary>
+        public int StorytellerMaxWorldObjects { get; set; }
+
+        /// <summary>
+        /// Время жизни лагерей рассказчика в часах (для временных точек).
+        /// </summary>
+        public int StorytellerCampLifetimeHours { get; set; }
+
+        /// <summary>
+        /// Время жизни форпостов рассказчика в часах (для временных точек).
+        /// </summary>
+        public int StorytellerOutpostLifetimeHours { get; set; }
+
+        /// <summary>
+        /// Шанс, что временный лагерь эволюционирует в постоянное поселение, в процентах.
+        /// </summary>
+        public int StorytellerCampUpgradeChancePercent { get; set; }
+
+        /// <summary>
+        /// Лимит хранения записей в серверном журнале повествования.
+        /// </summary>
+        public int StorytellerEventHistoryLimit { get; set; }
+
+        /// <summary>
+        /// Вес события "лагерь у границ игрока", в процентах.
+        /// </summary>
+        public int StorytellerPlayerCampWeightPercent { get; set; }
+
+        /// <summary>
+        /// Вес события "торговый лагерь", в процентах.
+        /// </summary>
+        public int StorytellerTradeCampWeightPercent { get; set; }
+
+        /// <summary>
+        /// Вес события "новое постоянное поселение", в процентах.
+        /// </summary>
+        public int StorytellerSettlementWeightPercent { get; set; }
+
+        /// <summary>
+        /// Вес события "новый форпост", в процентах.
+        /// </summary>
+        public int StorytellerOutpostWeightPercent { get; set; }
+
+        /// <summary>
+        /// Шанс фракционного конфликта рассказчика за тик, в процентах.
+        /// </summary>
+        public int StorytellerConflictChancePercent { get; set; }
+
+        /// <summary>
+        /// Шанс дипломатического события рассказчика за тик, в процентах.
+        /// </summary>
+        public int StorytellerDiplomacyChancePercent { get; set; }
+
+        /// <summary>
+        /// Шанс эволюции постоянного поселения рассказчика за шаг, в процентах.
+        /// </summary>
+        public int StorytellerSettlementEvolutionChancePercent { get; set; }
+
+        /// <summary>
+        /// Шанс распространения влияния развитого поселения (создание новых точек) за шаг, в процентах.
+        /// </summary>
+        public int StorytellerSettlementSpreadChancePercent { get; set; }
+
+        /// <summary>
+        /// При экспансии города (уровень 3+) и наличии рядом враждебных/чужих соседей:
+        /// шанс выбрать военную базу вместо обычной ветки.
+        /// </summary>
+        public int StorytellerSpreadCityEnemyMilitaryBaseChancePercent { get; set; }
+
+        /// <summary>
+        /// При экспансии города (уровень 3+) и наличии рядом союзных соседей:
+        /// шанс выбрать торговый пост вместо обычной ветки.
+        /// </summary>
+        public int StorytellerSpreadCityAllyTradeCampChancePercent { get; set; }
+
+        /// <summary>
+        /// При экспансии поселений уровня 1-2 и наличии рядом враждебных/чужих соседей:
+        /// шанс выбрать форпост вместо обычной ветки.
+        /// </summary>
+        public int StorytellerSpreadLowEnemyOutpostChancePercent { get; set; }
+
+        /// <summary>
+        /// При экспансии поселений уровня 1-2 и наличии рядом союзных соседей:
+        /// шанс выбрать торговый пост вместо обычной ветки.
+        /// </summary>
+        public int StorytellerSpreadLowAllyTradeCampChancePercent { get; set; }
+
+        /// <summary>
+        /// Кулдаун между шагами эволюции/экспансии поселения рассказчика, в минутах.
+        /// </summary>
+        public int StorytellerSettlementActionCooldownMinutes { get; set; }
+
+        /// <summary>
+        /// Кулдаун повторных сюжетных событий про взаимодействия игроков, в минутах.
+        /// </summary>
+        public int StorytellerInteractionCooldownMinutes { get; set; }
+
+        /// <summary>
+        /// Включает публикацию сюжетных уведомлений о перемещениях/встречах караванов игроков.
+        /// Если false, события типа "кто кого посетил" не попадают в журнал.
+        /// </summary>
+        public bool StorytellerPlayerInteractionEventsEnabled { get; set; }
+
+        /// <summary>
+        /// Через сколько минут отсутствия игрок считается "долго отсутствующим" для дайджеста.
+        /// </summary>
+        public int StoryDigestOfflineMinutes { get; set; }
+
+        /// <summary>
+        /// Если новых сюжетных событий не больше этого значения и игрок не отсутствовал долго,
+        /// отправляются отдельные уведомления вместо единого журнала.
+        /// </summary>
+        public int StoryDigestImmediateEventsMax { get; set; }
+
+        /// <summary>
+        /// Максимум строк, показываемых в журнале повествования.
+        /// </summary>
+        public int StoryDigestMaxLines { get; set; }
+
+        /// <summary>
+        /// При достижении этого числа уведомлений они объединяются в один журнал уведомлений.
+        /// </summary>
+        public int MessageDigestThreshold { get; set; }
+
+        /// <summary>
+        /// Максимум строк, показываемых в журнале уведомлений.
+        /// </summary>
+        public int MessageDigestMaxLines { get; set; }
+
+        /// <summary>
+        /// Бонус к целевой стоимости лута за уровень сюжетной точки (в процентах за уровень сверх первого).
+        /// </summary>
+        public int StoryPointLootLevelMarketBonusPercent { get; set; }
+
+        /// <summary>
+        /// Профиль лута для торговых лагерей: количество кэшей.
+        /// </summary>
+        public int StoryPointLootTradeCampCacheCount { get; set; }
+
+        /// <summary>
+        /// Профиль лута для торговых лагерей: минимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootTradeCampItemsMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для торговых лагерей: максимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootTradeCampItemsMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для торговых лагерей: минимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootTradeCampMarketMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для торговых лагерей: максимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootTradeCampMarketMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для поселений: количество кэшей.
+        /// </summary>
+        public int StoryPointLootSettlementCacheCount { get; set; }
+
+        /// <summary>
+        /// Профиль лута для поселений: минимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootSettlementItemsMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для поселений: максимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootSettlementItemsMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для поселений: минимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootSettlementMarketMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для поселений: максимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootSettlementMarketMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для городов: количество кэшей.
+        /// </summary>
+        public int StoryPointLootCityCacheCount { get; set; }
+
+        /// <summary>
+        /// Профиль лута для городов: минимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootCityItemsMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для городов: максимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootCityItemsMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для городов: минимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootCityMarketMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для городов: максимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootCityMarketMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для форпостов: количество кэшей.
+        /// </summary>
+        public int StoryPointLootOutpostCacheCount { get; set; }
+
+        /// <summary>
+        /// Профиль лута для форпостов: минимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootOutpostItemsMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для форпостов: максимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootOutpostItemsMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для форпостов: минимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootOutpostMarketMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для форпостов: максимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootOutpostMarketMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для универсальных точек: количество кэшей.
+        /// </summary>
+        public int StoryPointLootGenericCacheCount { get; set; }
+
+        /// <summary>
+        /// Профиль лута для универсальных точек: минимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootGenericItemsMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для универсальных точек: максимум предметов в кэше.
+        /// </summary>
+        public int StoryPointLootGenericItemsMax { get; set; }
+
+        /// <summary>
+        /// Профиль лута для универсальных точек: минимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootGenericMarketMin { get; set; }
+
+        /// <summary>
+        /// Профиль лута для универсальных точек: максимум целевой стоимости кэша.
+        /// </summary>
+        public int StoryPointLootGenericMarketMax { get; set; }
+
+        /// <summary>
+        /// Вес еды/медицины для торгового профиля (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightTradeFoodMedicinePercent { get; set; }
+
+        /// <summary>
+        /// Вес технологий для торгового профиля (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightTradeTechPercent { get; set; }
+
+        /// <summary>
+        /// Вес еды для профиля поселений (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightSettlementFoodPercent { get; set; }
+
+        /// <summary>
+        /// Вес мебели/материалов для профиля поселений (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightSettlementFurniturePercent { get; set; }
+
+        /// <summary>
+        /// Вес оружия для городского профиля (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightCityWeaponPercent { get; set; }
+
+        /// <summary>
+        /// Вес технологий для городского профиля (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightCityTechPercent { get; set; }
+
+        /// <summary>
+        /// Вес оружия для профиля форпостов (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightOutpostWeaponPercent { get; set; }
+
+        /// <summary>
+        /// Вес протезов для профиля форпостов (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightOutpostProstheticPercent { get; set; }
+
+        /// <summary>
+        /// Вес турельных ресурсов для профиля форпостов (проценты, 100 = без изменений).
+        /// </summary>
+        public int StoryPointLootWeightOutpostTurretResourcePercent { get; set; }
+
+        /// <summary>
         /// Включить биржу (WIP)
         /// </summary>
         public bool ExchengeEnable { get; set; }
@@ -180,6 +501,104 @@ namespace OCUnion
             IncidentAlarmInHours = 10;
 
             EquableWorldObjects = false;
+
+            StorytellerEnable = true;
+
+            StorytellerTickIntervalSeconds = 90;
+
+            StorytellerSpawnChancePercent = 30;
+
+            StorytellerMaxWorldObjects = 24;
+
+            StorytellerCampLifetimeHours = 72;
+
+            StorytellerOutpostLifetimeHours = 120;
+
+            StorytellerCampUpgradeChancePercent = 18;
+
+            StorytellerEventHistoryLimit = 3000;
+
+            StorytellerPlayerCampWeightPercent = 45;
+
+            StorytellerTradeCampWeightPercent = 30;
+
+            StorytellerSettlementWeightPercent = 25;
+
+            StorytellerOutpostWeightPercent = 18;
+
+            StorytellerConflictChancePercent = 8;
+
+            StorytellerDiplomacyChancePercent = 10;
+
+            StorytellerSettlementEvolutionChancePercent = 11;
+
+            StorytellerSettlementSpreadChancePercent = 15;
+
+            StorytellerSpreadCityEnemyMilitaryBaseChancePercent = 85;
+
+            StorytellerSpreadCityAllyTradeCampChancePercent = 75;
+
+            StorytellerSpreadLowEnemyOutpostChancePercent = 80;
+
+            StorytellerSpreadLowAllyTradeCampChancePercent = 70;
+
+            StorytellerSettlementActionCooldownMinutes = 540;
+
+            StorytellerInteractionCooldownMinutes = 45;
+
+            StorytellerPlayerInteractionEventsEnabled = false;
+
+            StoryDigestOfflineMinutes = 30;
+
+            StoryDigestImmediateEventsMax = 3;
+
+            StoryDigestMaxLines = 40;
+
+            MessageDigestThreshold = 12;
+
+            MessageDigestMaxLines = 30;
+
+            StoryPointLootLevelMarketBonusPercent = 20;
+
+            StoryPointLootTradeCampCacheCount = 5;
+            StoryPointLootTradeCampItemsMin = 4;
+            StoryPointLootTradeCampItemsMax = 8;
+            StoryPointLootTradeCampMarketMin = 450;
+            StoryPointLootTradeCampMarketMax = 1200;
+
+            StoryPointLootSettlementCacheCount = 5;
+            StoryPointLootSettlementItemsMin = 3;
+            StoryPointLootSettlementItemsMax = 7;
+            StoryPointLootSettlementMarketMin = 500;
+            StoryPointLootSettlementMarketMax = 1400;
+
+            StoryPointLootCityCacheCount = 6;
+            StoryPointLootCityItemsMin = 4;
+            StoryPointLootCityItemsMax = 9;
+            StoryPointLootCityMarketMin = 900;
+            StoryPointLootCityMarketMax = 2600;
+
+            StoryPointLootOutpostCacheCount = 6;
+            StoryPointLootOutpostItemsMin = 4;
+            StoryPointLootOutpostItemsMax = 8;
+            StoryPointLootOutpostMarketMin = 700;
+            StoryPointLootOutpostMarketMax = 1700;
+
+            StoryPointLootGenericCacheCount = 3;
+            StoryPointLootGenericItemsMin = 3;
+            StoryPointLootGenericItemsMax = 5;
+            StoryPointLootGenericMarketMin = 350;
+            StoryPointLootGenericMarketMax = 1000;
+
+            StoryPointLootWeightTradeFoodMedicinePercent = 160;
+            StoryPointLootWeightTradeTechPercent = 125;
+            StoryPointLootWeightSettlementFoodPercent = 210;
+            StoryPointLootWeightSettlementFurniturePercent = 180;
+            StoryPointLootWeightCityWeaponPercent = 220;
+            StoryPointLootWeightCityTechPercent = 200;
+            StoryPointLootWeightOutpostWeaponPercent = 220;
+            StoryPointLootWeightOutpostProstheticPercent = 200;
+            StoryPointLootWeightOutpostTurretResourcePercent = 180;
 
             ScenarioAviable = true;
 

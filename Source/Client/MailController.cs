@@ -3,10 +3,12 @@ using OCUnion;
 using RimWorld;
 using RimWorld.Planet;
 using RimWorldOnlineCity.GameClasses;
+using RimWorldOnlineCity.UI;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Transfer;
 using Transfer.ModelMails;
 using Verse;
@@ -22,11 +24,22 @@ namespace RimWorldOnlineCity
             { typeof(ModelMailAttackCancel), MailProcessAttackCancel},
             { typeof(ModelMailAttackTechnicalVictory), MailProcessAttackTechnicalVictory},
             { typeof(ModelMailStartIncident), MailProcessStartIncident},
+            { typeof(ModelMailBarterOffer), MailProcessBarterOffer},
+            { typeof(ModelMailStoryLog), MailProcessStoryLog},
             { typeof(ModelMailMessadge), MailProcessMessadge}
         };
 
         public static void MailArrived(ModelMail mail)
         {
+            if (mail == null) return;
+
+            if (!IsMainThread())
+            {
+                var queuedMail = mail;
+                ModBaseData.RunMainThread(() => MailArrived(queuedMail));
+                return;
+            }
+
             try
             {
                 if (mail.To == null
@@ -50,6 +63,19 @@ namespace RimWorldOnlineCity
             {
                 Loger.Log("Mail Exception: " + e.ToString(), Loger.LogLevel.ERROR);
             }
+        }
+
+        private static bool IsMainThread()
+        {
+            if (ModBaseData.GlobalData == null) return true;
+            return ModBaseData.GlobalData.MainThreadNum == Thread.CurrentThread.ManagedThreadId;
+        }
+
+        private static void PauseForDialog()
+        {
+            if (Find.TickManager == null) return;
+            if (Find.TickManager.Paused) return;
+            Find.TickManager.Pause();
         }
 
 
@@ -121,7 +147,7 @@ namespace RimWorldOnlineCity
             Loger.Log("IncidentLod MailController.MailProcessStartIncident 1");
             var mail = (ModelMailStartIncident)incoming;
 
-            Find.TickManager.Pause();
+            PauseForDialog();
             
             var incident = new OCIncidentFactory().GetIncident(mail.IncidentType);
             incident.mult = mail.IncidentMult;
@@ -172,7 +198,7 @@ namespace RimWorldOnlineCity
                 ti = new GlobalTargetInfo(cell, ((Settlement)place).Map);
             }
             */
-            Find.TickManager.Pause();
+            PauseForDialog();
             GameUtils.ShowDialodOKCancel("OCity_UpdateWorld_Trade".Translate()
                 , text
                 , () => ExchengeUtils.SpawnToWorldObject(place, things, text)
@@ -181,6 +207,53 @@ namespace RimWorldOnlineCity
         }
 
         #endregion CreateThings
+
+        #region BarterOffer
+        public static void MailProcessBarterOffer(ModelMail incoming)
+        {
+            var mail = incoming as ModelMailBarterOffer;
+            if (mail == null
+                || mail.OrderId <= 0
+                || mail.CountReady <= 0
+                || (mail.SellThings?.Count ?? 0) == 0
+                || (mail.BuyThings?.Count ?? 0) == 0)
+            {
+                Loger.Log("Mail fail: no barter offer data");
+                return;
+            }
+
+            PauseForDialog();
+            Find.WindowStack.Add(new Dialog_BarterOffer(mail));
+        }
+        #endregion BarterOffer
+
+        #region StoryLog
+        public static void MailProcessStoryLog(ModelMail incoming)
+        {
+            var mail = incoming as ModelMailStoryLog;
+            if (mail == null)
+            {
+                Loger.Log("Mail fail: no story log data");
+                return;
+            }
+
+            var title = ChatController.ServerCharTranslate(string.IsNullOrWhiteSpace(mail.Title) ? "Журнал" : mail.Title);
+            var summary = ChatController.ServerCharTranslate(string.IsNullOrWhiteSpace(mail.Summary) ? "Доступны новые записи." : mail.Summary);
+            PushStoryLogLetter(mail, title, summary);
+
+            if (mail.PopupOnReceive)
+            {
+                Find.WindowStack.Add(new Dialog_StoryLog(mail));
+                return;
+            }
+        }
+
+        private static void PushStoryLogLetter(ModelMailStoryLog mail, string title, string summary)
+        {
+            var letter = new Letter_StoryLog(mail, title, summary, OC_LetterDefOf.GreyGoldenLetter);
+            Find.LetterStack.ReceiveLetter(letter);
+        }
+        #endregion StoryLog
 
         #region DeleteByServerId
         public static void MailProcessDeleteByServerId(ModelMail incoming)

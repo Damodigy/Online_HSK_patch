@@ -34,6 +34,7 @@ namespace RimWorldOnlineCity
             {
                 if (сaravanOnline == null) return "";
                 return string.Format(mode == "exchangeOfGoods" ? "OCity_Caravan_GoTrade".Translate()
+                        : mode == "barter" ? "OCity_Dialog_Exchenge_Counterproposal".Translate()
                         : mode == "attack" ? "OCity_Caravan_Go_Attack_Target".Translate()
                         : "OCity_Caravan_GoTrade2".Translate()
                     , сaravanOnline.Label);
@@ -56,6 +57,10 @@ namespace RimWorldOnlineCity
             if (mode == "exchangeOfGoods")
             {
                 ExchengeUtils.ExchangeOfGoods_DoAction(сaravanOnline, caravan);
+            }
+            else if (mode == "barter")
+            {
+                ExchengeUtils.Barter_DoAction(сaravanOnline, caravan);
             }
             else if (mode == "attack")
             {

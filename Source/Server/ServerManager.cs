@@ -15,6 +15,7 @@ using OCUnion.Transfer.Model;
 using OCUnion.Common;
 using OCUnion.Transfer;
 using ServerOnlineCity.Services;
+using ServerOnlineCity.Mechanics;
 using System.Net;
 using System.Diagnostics;
 using System.Globalization;
@@ -366,6 +367,12 @@ namespace ServerOnlineCity
                     states.MarketValueRankingLast = states.MarketValueRanking;
                     states.MarketValueRanking = Repository.GetData.StatesRanking.IndexOf(states.Name) + 1;
                 }
+            }
+
+            // Глобальные серверные сюжетные события и точки на карте.
+            lock (Repository.GetData)
+            {
+                ServerStoryteller.Tick(Repository.GetData);
             }
 
             /// Завершение

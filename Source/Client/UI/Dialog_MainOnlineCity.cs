@@ -22,6 +22,7 @@ namespace RimWorldOnlineCity
         private PanelChat panelChat;
         private PanelProfilePlayer panelProfilePlayer;
         private PanelViewInfo panelViewStates;
+        private PanelDebug panelDebug;
 
 
         public static string AboutGeneralText = MainHelper.VersionInfo + " "
@@ -55,6 +56,7 @@ namespace RimWorldOnlineCity
             panelChat = new PanelChat();
             panelProfilePlayer = new PanelProfilePlayer();
             panelViewStates = new PanelViewInfo();
+            panelDebug = new PanelDebug();
 
             ChatController.MainPanelChat = panelChat;
         }
@@ -125,12 +127,14 @@ namespace RimWorldOnlineCity
                 list.Add(new TabRecord("OCity_Dialog_ListChat".Translate(), () => { TabIndex = 0; }, TabIndex == 0));
                 //list.Add(new TabRecord("OCity_Dialog_ListInfo".Translate(), () => { TabIndex = 1; }, TabIndex == 1));
                 list.Add(new TabRecord("OCity_Dialog_Settings".Translate(), () => { TabIndex = 2; }, TabIndex == 2));
+                list.Add(new TabRecord("Дебаг", () => { TabIndex = 4; }, TabIndex == 4));
                 list.Add(new TabRecord("OCity_Dialog_ListAbout".Translate(), () => { TabIndex = 3; }, TabIndex == 3));
                 TabDrawer.DrawTabs(screenRect, list);
                 if (TabIndex == 0) DoTab0Contents(tabRect);
                 else if (TabIndex == 1) DoTab1Contents(tabRect);
                 else if (TabIndex == 2) DoTab2Contents(tabRect);
                 else if (TabIndex == 3) DoTab3Contents(tabRect);
+                else if (TabIndex == 4) DoTab4Contents(tabRect);
 
                 Text.Font = GameFont.Small;
                 var loginRect = new Rect(inRect.width - 180f, -2f, 180f, 50f);
@@ -234,7 +238,11 @@ namespace RimWorldOnlineCity
             Widgets.Label(inRect, "Вкладка 3");
             */
         }
-        
+
+        public void DoTab4Contents(Rect inRect)
+        {
+            panelDebug.Drow(inRect);
+        }
 
     }
 }
