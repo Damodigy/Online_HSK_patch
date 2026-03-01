@@ -155,8 +155,12 @@ namespace RimWorldOnlineCity
         private static object UpdatingWorld = new object();
         private static int GetPlayersInfoCountRequest = 0;
         private static readonly int[] UpdateWorldIntervalsMs = { 5000, 10000, 15000 };
+        private static readonly int[] ChatCheckIntervalsMs = { 500, 750, 1000, 1500, 2000, 3000 };
         private static DateTime UpdateWorldNextRunAt = DateTime.MinValue;
         private static int UpdateWorldIdleLevel = 0;
+        private static DateTime ChatNextRunAt = DateTime.MinValue;
+        private static int ChatIdleLevel = 0;
+        private static DateTime TextureUpdateNextRunAt = DateTime.MinValue;
         private const int NetworkDebugEventsMax = 12;
         private static readonly object NetworkDebugLock = new object();
         private static readonly Queue<string> NetworkDebugEvents = new Queue<string>();
@@ -170,6 +174,7 @@ namespace RimWorldOnlineCity
         private static DateTime LastSaveUploadedAt = DateTime.MinValue;
         private static long LastSaveQueuedBytes = 0;
         private static long LastSaveUploadedBytes = 0;
+        private static long LastSaveUploadedTransferredBytes = 0;
         private static int SaveUploadRetryCount = 0;
         private static string LastSaveUploadError = null;
         private static bool SaveInMemoryEnabled = true;
@@ -177,6 +182,15 @@ namespace RimWorldOnlineCity
         private static string LastSaveUploadedFingerprint = null;
         private static string LastSaveQueuedTargetKey = null;
         private static string LastSaveUploadedTargetKey = null;
+        private static string SaveTransferId = null;
+        private static string SaveTransferFingerprint = null;
+        private static string SaveTransferTargetKey = null;
+        private static int SaveTransferOffset = 0;
+        private static int SaveTransferTotal = 0;
+        private const int SaveChunkedThresholdBytes = 1024 * 1024; // 1 MB
+        private const int SaveChunkMinBytes = 128 * 1024;
+        private const int SaveChunkMaxBytes = 384 * 1024;
+        private const int VisitCleanupState = 90;
         private static bool SkipRestoreMapViewAfterLoadOnce = false;
         /// <summary>
         /// Флаг одноразового пропуска GameExit.BeforeExit при служебной загрузке выбранного серверного сейва.
@@ -325,6 +339,55 @@ namespace RimWorldOnlineCity
             return "слот:" + manualSlot;
         }
 
+        private static void ResetSaveTransferState()
+        {
+            SaveTransferId = null;
+            SaveTransferFingerprint = null;
+            SaveTransferTargetKey = null;
+            SaveTransferOffset = 0;
+            SaveTransferTotal = 0;
+            LastSaveUploadedTransferredBytes = 0;
+        }
+
+        private static int GetSaveChunkSizeBytes()
+        {
+            var pingMs = Data == null ? 0 : (int)Data.Ping.TotalMilliseconds;
+            if (pingMs >= 300) return SaveChunkMinBytes;
+            if (pingMs >= 220) return 192 * 1024;
+            if (pingMs >= 140) return 256 * 1024;
+            return SaveChunkMaxBytes;
+        }
+
+        private static bool ShouldUseChunkedSaveUpload(byte[] content)
+        {
+            return content != null && content.Length >= SaveChunkedThresholdBytes;
+        }
+
+        private static void EnsureSaveTransferState(byte[] saveContent, string saveFingerprint, string saveTargetKey)
+        {
+            if (saveContent == null || saveContent.Length <= 0)
+            {
+                ResetSaveTransferState();
+                return;
+            }
+
+            var needReset = string.IsNullOrEmpty(SaveTransferId)
+                || SaveTransferTotal != saveContent.Length
+                || !string.Equals(SaveTransferFingerprint, saveFingerprint, StringComparison.Ordinal)
+                || !string.Equals(SaveTransferTargetKey, saveTargetKey, StringComparison.Ordinal)
+                || SaveTransferOffset < 0
+                || SaveTransferOffset > saveContent.Length;
+
+            if (!needReset) return;
+
+            SaveTransferId = Guid.NewGuid().ToString("N");
+            SaveTransferFingerprint = saveFingerprint;
+            SaveTransferTargetKey = saveTargetKey;
+            SaveTransferOffset = 0;
+            SaveTransferTotal = saveContent.Length;
+            LastSaveUploadedTransferredBytes = 0;
+        }
+
         private static void QueueSaveForUpload(byte[] content, bool single, string source, bool saveIsAuto, int saveSlot)
         {
             if (content == null || content.Length <= 1024)
@@ -384,6 +447,12 @@ namespace RimWorldOnlineCity
             Data.SingleSave = single;
             Data.PendingSaveIsAuto = saveIsAuto;
             Data.PendingSaveSlotNumber = normalizedSlot;
+            if (!string.Equals(SaveTransferFingerprint, fingerprint, StringComparison.Ordinal)
+                || !string.Equals(SaveTransferTargetKey, targetKey, StringComparison.Ordinal)
+                || SaveTransferTotal != content.Length)
+            {
+                ResetSaveTransferState();
+            }
             if (saveIsAuto)
             {
                 if (normalizedSlot > 0) Data.AutoSaveSlotNumber = normalizedSlot;
@@ -413,7 +482,16 @@ namespace RimWorldOnlineCity
             var pendingTargetText = GetSaveTargetText(Data?.PendingSaveIsAuto ?? false, Data?.PendingSaveSlotNumber ?? 1);
             if (pendingSave != null && pendingSave.Length > 0)
             {
+                var transferProgress = "";
+                if (ShouldUseChunkedSaveUpload(pendingSave) && SaveTransferTotal > 0)
+                {
+                    var current = SaveTransferOffset;
+                    if (current <= 0) current = (int)Math.Min(int.MaxValue, LastSaveUploadedTransferredBytes);
+                    if (current > SaveTransferTotal) current = SaveTransferTotal;
+                    transferProgress = " " + FormatBytes(current) + "/" + FormatBytes(SaveTransferTotal);
+                }
                 return "СЕЙВ в очереди " + FormatBytes(pendingSave.LongLength)
+                    + transferProgress
                     + (SaveUploadRetryCount > 0 ? " повтор:" + SaveUploadRetryCount : "")
                     + " " + pendingTargetText;
             }
@@ -516,6 +594,61 @@ namespace RimWorldOnlineCity
             UpdateWorldNextRunAt = DateTime.MinValue;
         }
 
+        private static void ResetChatSchedule()
+        {
+            ChatIdleLevel = 0;
+            ChatNextRunAt = DateTime.MinValue;
+            TextureUpdateNextRunAt = DateTime.MinValue;
+            if (Data != null) Data.ChatCountSkipUpdate = 0;
+        }
+
+        private static int GetChatPingFloorIntervalMs()
+        {
+            var pingMs = Data == null ? 0 : (int)Data.Ping.TotalMilliseconds;
+            if (pingMs >= 300) return 2000;
+            if (pingMs >= 200) return 1200;
+            if (pingMs >= 120) return 750;
+            return 500;
+        }
+
+        private static void ScheduleNextChatUpdate(bool hasActivity, bool hadError)
+        {
+            if (hadError || hasActivity)
+            {
+                ChatIdleLevel = 0;
+            }
+            else if (ChatIdleLevel < ChatCheckIntervalsMs.Length - 1)
+            {
+                ChatIdleLevel++;
+            }
+
+            var interval = Math.Max(ChatCheckIntervalsMs[ChatIdleLevel], GetChatPingFloorIntervalMs());
+            // Если связь нестабильна, чаще проверяем восстановление.
+            if (Data?.LastServerConnectFail == true) interval = Math.Min(interval, 750);
+            ChatNextRunAt = DateTime.UtcNow.AddMilliseconds(interval);
+        }
+
+        private static int GetTextureUpdateIntervalMs()
+        {
+            var pingMs = Data == null ? 0 : (int)Data.Ping.TotalMilliseconds;
+            if (pingMs >= 300) return 5000;
+            if (pingMs >= 200) return 3500;
+            if (pingMs >= 120) return 2500;
+            return 1500;
+        }
+
+        private static bool TryBeginTextureUpdate()
+        {
+            var now = DateTime.UtcNow;
+            if (TextureUpdateNextRunAt != DateTime.MinValue && now < TextureUpdateNextRunAt)
+            {
+                return false;
+            }
+
+            TextureUpdateNextRunAt = now.AddMilliseconds(GetTextureUpdateIntervalMs());
+            return true;
+        }
+
         private static void ResetSaveUploadState()
         {
             LastSaveQueuedAt = DateTime.MinValue;
@@ -528,6 +661,7 @@ namespace RimWorldOnlineCity
             LastSaveUploadedFingerprint = null;
             LastSaveQueuedTargetKey = null;
             LastSaveUploadedTargetKey = null;
+            ResetSaveTransferState();
             lock (SaveDebugLock)
             {
                 SaveDebugEvents.Clear();
@@ -577,6 +711,85 @@ namespace RimWorldOnlineCity
                 || fromServ.NeedSaveAndExit;
         }
 
+        private static void HandleIncomingVisitRequest(ModelPlayToClient fromServ)
+        {
+            if (Data == null) return;
+            if (Data.VisitHostResponding) return;
+            if (Data.AttackModule != null || Data.AttackUsModule != null || Data.VisitModule != null) return;
+
+            Data.VisitHostResponding = true;
+            var attackerLogin = string.IsNullOrEmpty(fromServ?.IncomingVisitAttackerLogin)
+                ? "Another player"
+                : fromServ.IncomingVisitAttackerLogin;
+
+            ModBaseData.RunMainThread(() =>
+            {
+                try
+                {
+                    if (Data == null) return;
+                    if (Data.AttackModule != null || Data.AttackUsModule != null || Data.VisitModule != null)
+                    {
+                        Data.VisitHostResponding = false;
+                        return;
+                    }
+
+                    Find.TickManager?.Pause();
+                    GameUtils.ShowDialodOKCancel(
+                        "Player Visit Request",
+                        attackerLogin + " wants to visit your map with caravan. Accept?",
+                        () => AcceptIncomingVisitRequest(),
+                        () => DeclineIncomingVisitRequest());
+                }
+                catch (Exception ex)
+                {
+                    Data.VisitHostResponding = false;
+                    Loger.Log("Client HandleIncomingVisitRequest dialog failed: " + ex, Loger.LogLevel.ERROR);
+                }
+            });
+        }
+
+        private static void AcceptIncomingVisitRequest()
+        {
+            if (Data == null) return;
+            if (!GameAttackHost.AttackMessage())
+            {
+                Data.VisitHostResponding = false;
+                return;
+            }
+
+            Command((connect) =>
+            {
+                GameAttackHost.Get.Start(connect);
+            });
+
+            Data.VisitHostResponding = false;
+        }
+
+        private static void DeclineIncomingVisitRequest()
+        {
+            if (Data == null) return;
+
+            try
+            {
+                Command((connect) =>
+                {
+                    connect.ErrorMessage = null;
+                    connect.AttackOnlineHost(new AttackHostToSrv()
+                    {
+                        State = VisitCleanupState
+                    });
+                    if (!string.IsNullOrEmpty(connect.ErrorMessage))
+                    {
+                        Loger.Log("Client DeclineIncomingVisitRequest failed: " + connect.ErrorMessage, Loger.LogLevel.WARNING);
+                    }
+                });
+            }
+            finally
+            {
+                Data.VisitHostResponding = false;
+            }
+        }
+
         private static void UpdateWorldAdaptiveTimer()
         {
             if (Current.Game == null) return;
@@ -598,6 +811,12 @@ namespace RimWorldOnlineCity
                 {
                     var errorNum = "0 ";
                     byte[] saveFileDataToSend = null;
+                    var saveChunkedRequest = false;
+                    var saveChunkOffset = 0;
+                    var saveTransferIdCurrent = (string)null;
+                    var saveTargetKeyCurrent = (string)null;
+                    var saveTargetTextCurrent = (string)null;
+                    var saveFingerprintCurrent = (string)null;
                     try
                     {
                         //Собираем пакет для отправки на сервер
@@ -610,12 +829,53 @@ namespace RimWorldOnlineCity
                         {
                             Data.AddTimeCheckTimerFail = true;
                             saveFileDataToSend = Data.SaveFileData;
-                            toServ.SaveFileData = saveFileDataToSend;
                             toServ.SingleSave = Data.SingleSave;
                             toServ.SaveIsAuto = Data.PendingSaveIsAuto;
                             toServ.SaveNumber = Data.PendingSaveIsAuto
                                 ? Data.PendingSaveSlotNumber
                                 : (Data.PendingSaveSlotNumber > 0 ? Data.PendingSaveSlotNumber : 1);
+
+                            saveTargetKeyCurrent = GetSaveTargetKey(toServ.SaveIsAuto, toServ.SaveNumber);
+                            saveTargetTextCurrent = GetSaveTargetText(toServ.SaveIsAuto, toServ.SaveNumber);
+                            saveFingerprintCurrent = GetSaveFingerprint(saveFileDataToSend);
+
+                            if (ShouldUseChunkedSaveUpload(saveFileDataToSend))
+                            {
+                                EnsureSaveTransferState(saveFileDataToSend, saveFingerprintCurrent, saveTargetKeyCurrent);
+
+                                saveChunkedRequest = true;
+                                saveChunkOffset = SaveTransferOffset;
+                                saveTransferIdCurrent = SaveTransferId;
+
+                                var remaining = saveFileDataToSend.Length - SaveTransferOffset;
+                                if (remaining < 0) remaining = 0;
+                                var chunkLen = Math.Min(GetSaveChunkSizeBytes(), remaining);
+                                if (chunkLen < 0) chunkLen = 0;
+                                if (chunkLen == 0 && saveFileDataToSend.Length > 0)
+                                {
+                                    // На всякий случай восстанавливаем корректное состояние передачи.
+                                    SaveTransferOffset = 0;
+                                    saveChunkOffset = 0;
+                                    chunkLen = Math.Min(GetSaveChunkSizeBytes(), saveFileDataToSend.Length);
+                                }
+
+                                var chunk = new byte[chunkLen];
+                                if (chunkLen > 0)
+                                {
+                                    Buffer.BlockCopy(saveFileDataToSend, saveChunkOffset, chunk, 0, chunkLen);
+                                }
+
+                                toServ.SaveFileData = chunk;
+                                toServ.SaveTransferId = saveTransferIdCurrent;
+                                toServ.SaveTransferOffset = saveChunkOffset;
+                                toServ.SaveTransferTotalLength = saveFileDataToSend.Length;
+                                toServ.SaveTransferIsLast = saveChunkOffset + chunkLen >= saveFileDataToSend.Length;
+                            }
+                            else
+                            {
+                                toServ.SaveFileData = saveFileDataToSend;
+                                ResetSaveTransferState();
+                            }
                         }
                         errorNum += "00 ";
 
@@ -674,28 +934,101 @@ namespace RimWorldOnlineCity
                         errorNum += "6 ";
                         //Отправляем на сервер и получаем ответ
                         ModelPlayToClient fromServ = connect.PlayInfo(toServ);
+                        Data.LastServerConnectFail = false;
+                        Data.LastServerConnect = DateTime.UtcNow;
                         if (saveFileDataToSend != null)
                         {
-                            var uploadedFingerprint = GetSaveFingerprint(saveFileDataToSend);
-                            var uploadedTargetKey = GetSaveTargetKey(toServ.SaveIsAuto, toServ.SaveNumber);
-                            var uploadedTargetText = GetSaveTargetText(toServ.SaveIsAuto, toServ.SaveNumber);
-                            if (ReferenceEquals(Data.SaveFileData, saveFileDataToSend))
+                            if (saveChunkedRequest)
                             {
-                                Data.SaveFileData = null;
-                                LastSaveQueuedFingerprint = null;
-                                LastSaveQueuedTargetKey = null;
+                                var transferError = fromServ.SaveTransferError;
+                                var transferIdFromServer = fromServ.SaveTransferId;
+                                var transferCompleted = fromServ.SaveTransferCompleted;
+                                var acceptedOffset = fromServ.SaveTransferAcceptedOffset;
+
+                                if (!string.IsNullOrEmpty(transferIdFromServer)
+                                    && !string.Equals(transferIdFromServer, saveTransferIdCurrent, StringComparison.Ordinal))
+                                {
+                                    transferError = "Некорректный id передачи от сервера.";
+                                }
+
+                                if (!string.IsNullOrEmpty(transferError))
+                                {
+                                    if (acceptedOffset < 0) acceptedOffset = 0;
+                                    if (acceptedOffset > saveFileDataToSend.Length) acceptedOffset = saveFileDataToSend.Length;
+                                    SaveTransferOffset = acceptedOffset;
+                                    LastSaveUploadedTransferredBytes = acceptedOffset;
+                                    if (transferError.IndexOf("id передачи", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        ResetSaveTransferState();
+                                    }
+                                    SaveUploadRetryCount++;
+                                    LastSaveUploadError = transferError;
+                                    AddSaveDebugEvent("повтор-чанк", toServ.SaveFileData?.LongLength ?? 0, CropDebugMessage(transferError));
+                                }
+                                else
+                                {
+                                    if (acceptedOffset <= 0)
+                                    {
+                                        acceptedOffset = saveChunkOffset + (toServ.SaveFileData?.Length ?? 0);
+                                    }
+                                    if (acceptedOffset < SaveTransferOffset) acceptedOffset = SaveTransferOffset;
+                                    if (acceptedOffset > saveFileDataToSend.Length) acceptedOffset = saveFileDataToSend.Length;
+                                    SaveTransferOffset = acceptedOffset;
+                                    LastSaveUploadedTransferredBytes = acceptedOffset;
+                                    SaveUploadRetryCount = 0;
+                                    LastSaveUploadError = null;
+
+                                    if (transferCompleted || acceptedOffset >= saveFileDataToSend.Length)
+                                    {
+                                        if (ReferenceEquals(Data.SaveFileData, saveFileDataToSend))
+                                        {
+                                            Data.SaveFileData = null;
+                                            LastSaveQueuedFingerprint = null;
+                                            LastSaveQueuedTargetKey = null;
+                                        }
+                                        LastSaveUploadedFingerprint = saveFingerprintCurrent;
+                                        LastSaveUploadedTargetKey = saveTargetKeyCurrent;
+                                        LastSaveUploadedAt = DateTime.UtcNow;
+                                        LastSaveUploadedBytes = saveFileDataToSend.LongLength;
+                                        LastSaveUploadedTransferredBytes = saveFileDataToSend.LongLength;
+                                        AddSaveDebugEvent("отправлен", saveFileDataToSend.LongLength,
+                                            (toServ.SingleSave ? "одиночный " : "") + saveTargetTextCurrent + " чанки");
+                                        if (NetworkDebugEnabled)
+                                        {
+                                            AddNetworkDebugEvent("Сейв отправлен " + FormatBytes(saveFileDataToSend.LongLength) + " " + saveTargetTextCurrent + " чанки");
+                                        }
+                                        ResetSaveTransferState();
+                                    }
+                                    else
+                                    {
+                                        AddSaveDebugEvent("чанк", toServ.SaveFileData?.LongLength ?? 0,
+                                            FormatBytes(acceptedOffset) + "/" + FormatBytes(saveFileDataToSend.LongLength) + " " + saveTargetTextCurrent);
+                                    }
+                                }
                             }
-                            LastSaveUploadedFingerprint = uploadedFingerprint;
-                            LastSaveUploadedTargetKey = uploadedTargetKey;
-                            LastSaveUploadedAt = DateTime.UtcNow;
-                            LastSaveUploadedBytes = saveFileDataToSend.LongLength;
-                            SaveUploadRetryCount = 0;
-                            LastSaveUploadError = null;
-                            AddSaveDebugEvent("отправлен", saveFileDataToSend.LongLength,
-                                (toServ.SingleSave ? "одиночный " : "") + uploadedTargetText);
-                            if (NetworkDebugEnabled)
+                            else
                             {
-                                AddNetworkDebugEvent("Сейв отправлен " + FormatBytes(saveFileDataToSend.LongLength) + " " + uploadedTargetText);
+                                if (ReferenceEquals(Data.SaveFileData, saveFileDataToSend))
+                                {
+                                    Data.SaveFileData = null;
+                                    LastSaveQueuedFingerprint = null;
+                                    LastSaveQueuedTargetKey = null;
+                                }
+                                LastSaveUploadedFingerprint = saveFingerprintCurrent ?? GetSaveFingerprint(saveFileDataToSend);
+                                LastSaveUploadedTargetKey = saveTargetKeyCurrent ?? GetSaveTargetKey(toServ.SaveIsAuto, toServ.SaveNumber);
+                                LastSaveUploadedAt = DateTime.UtcNow;
+                                LastSaveUploadedBytes = saveFileDataToSend.LongLength;
+                                LastSaveUploadedTransferredBytes = saveFileDataToSend.LongLength;
+                                SaveUploadRetryCount = 0;
+                                LastSaveUploadError = null;
+                                AddSaveDebugEvent("отправлен", saveFileDataToSend.LongLength,
+                                    (toServ.SingleSave ? "одиночный " : "") + (saveTargetTextCurrent ?? GetSaveTargetText(toServ.SaveIsAuto, toServ.SaveNumber)));
+                                if (NetworkDebugEnabled)
+                                {
+                                    AddNetworkDebugEvent("Сейв отправлен " + FormatBytes(saveFileDataToSend.LongLength) + " "
+                                        + (saveTargetTextCurrent ?? GetSaveTargetText(toServ.SaveIsAuto, toServ.SaveNumber)));
+                                }
+                                ResetSaveTransferState();
                             }
                         }
                         if (Data.AddTimeCheckTimerFail)
@@ -786,10 +1119,16 @@ namespace RimWorldOnlineCity
                                 SessionClientController.Disconnected("OCity_SessionCC_Shutdown_Command".Translate());
                         }
 
-                        //если на нас напали запускаем процесс
-                        if (fromServ.AreAttacking && GameAttackHost.AttackMessage())
+                        // Сбрасываем флаг диалога, когда входящего запроса уже нет.
+                        if (!fromServ.AreAttacking && Data.VisitHostResponding && Data.AttackUsModule == null)
                         {
-                            GameAttackHost.Get.Start(connect);
+                            Data.VisitHostResponding = false;
+                        }
+
+                        // Входящий запрос совместного визита: показываем хосту окно "принять/отклонить".
+                        if (fromServ.AreAttacking)
+                        {
+                            HandleIncomingVisitRequest(fromServ);
                         }
 
                         var hasActivity = HasNetworkActivity(toServ, fromServ, firstRun);
@@ -986,6 +1325,12 @@ namespace RimWorldOnlineCity
         /// <param name="single">Будут удалены остальные Варианты сохранений, кроме этого</param>
         public static void SaveGameNow(bool single = false, Action after = null, bool saveIsAuto = false, int saveSlot = 0)
         {
+            if (Data?.VisitModule != null)
+            {
+                Loger.Log("Client SaveGameNow skipped: visit session is active");
+                if (after != null) after();
+                return;
+            }
             // checkConfigsBeforeSave(); 
             Loger.Log("Client SaveGameNow single=" + single.ToString() + " saveIsAuto=" + saveIsAuto.ToString() + " saveSlot=" + saveSlot.ToString());
             SaveGame((content) =>
@@ -1017,6 +1362,12 @@ namespace RimWorldOnlineCity
         /// <param name="single">Будут удалены остальные Варианты сохранений, кроме этого</param>
         public static void SaveGameNowInEvent(bool single = false)
         {
+            if (Data?.VisitModule != null)
+            {
+                Loger.Log($"Client {SessionClientController.My.Login} SaveGameNowInEvent skipped: visit session is active");
+                return;
+            }
+
             Loger.Log($"Client {SessionClientController.My.Login} SaveGameNowInEvent одиночный=" + single.ToString());
 
             var content = SaveGameCore();
@@ -1058,10 +1409,25 @@ namespace RimWorldOnlineCity
         {
             try
             {
+                if (Data == null || SessionClient.IsRelogin) return;
+                if (ChatIsUpdating) return;
+                var client = SessionClient.Get?.Client;
+                if (client != null && client.CurrentRequestStart != DateTime.MinValue) return;
+                if (Data.LastServerConnect != DateTime.MinValue
+                    && (DateTime.UtcNow - Data.LastServerConnect).TotalSeconds < 6)
+                {
+                    return; // недавно был успешный сетевой обмен, лишний ping не нужен
+                }
+
                 Command((connect) =>
                 {
-                    connect.ServicePing();
-                    Data.CountReconnectBeforeUpdate = 0;
+                    var pingOk = connect.ServicePing();
+                    if (pingOk)
+                    {
+                        Data.LastServerConnectFail = false;
+                        Data.LastServerConnect = DateTime.UtcNow;
+                        Data.CountReconnectBeforeUpdate = 0;
+                    }
                 });
             }
             catch
@@ -1178,89 +1544,77 @@ namespace RimWorldOnlineCity
         private static volatile bool ChatIsUpdating = false;
         private static void UpdateChats()
         {
+            if (Current.Game == null) return;
+            if (!SessionClient.Get.IsLogined) return;
+            if (ChatNextRunAt == DateTime.MinValue) ChatNextRunAt = DateTime.UtcNow;
+            if (DateTime.UtcNow < ChatNextRunAt) return;
+
             //Loger.Log("Client UpdateChating...");
             Command((connect) =>
             {
                 // Пока не обработали старый запрос, новый не отправляем, иначе ответ не успевает отправиться и следом еще один запрос на изменения
                 if (ChatIsUpdating)
                 {
+                    ScheduleNextChatUpdate(false, false);
                     return;
                 }
 
                 ChatIsUpdating = true;
+                var hasActivity = false;
+                var hadError = false;
                 try
                 {
                     var timeFrom = DateTime.UtcNow;
-                    var test = connect.ServiceCheck();
+                    var dc = connect.UpdateChat(Data.ChatsTime);
                     Data.Ping = DateTime.UtcNow - timeFrom;
 
-                    if (test != null)
+                    if (dc != null)
                     {
                         Data.LastServerConnectFail = false;
                         Data.LastServerConnect = DateTime.UtcNow;
+                        Data.ServetTimeDelta = dc.Time - DateTime.UtcNow;
+                        Data.ChatsTime.Time = dc.Time;
+                        Data.ChatsTime.Value = dc.Value;
 
-                        //обновляем чат
-                        if (test.Value || Data.ChatCountSkipUpdate > 60) // 60 * 500ms = принудительно раз в пол минуты
+                        var newPosts = false;
+                        var anyDeliveredPosts = false;
+                        if (dc.Chats != null)
                         {
-                            //Loger.Log("Client UpdateChats f0");
-                            var dc = connect.UpdateChat(Data.ChatsTime);
-                            if (dc != null)
-                            {
-                                Data.ServetTimeDelta = dc.Time - DateTime.UtcNow;
-                                Data.ChatsTime.Time = dc.Time;
-                                //Loger.Log("Client UpdateChats: " + dc.Chats.Count.ToString() //+ " - " + dc.Time.Ticks //dc.Time.ToString(Loger.Culture)
-                                //    + "   " + (dc.Chats.Count == 0 ? "" : dc.Chats[0].Posts.Count.ToString()));
-
-                                if (Data.ApplyChats(dc) && !test.Value)
-                                {
-                                    Loger.Log("Client UpdateChats: ServiceCheck fail ");
-                                }
-                            }
-                            else
-                            {
-                                Disconnected("Неизвестная ошибка в UpdateChats");
-                            }
-
-                            Data.ChatCountSkipUpdate = 0;
+                            newPosts = Data.ApplyChats(dc);
+                            anyDeliveredPosts = dc.Chats.Any(c => (c.Posts?.Count ?? 0) > 0);
                         }
-                        else
-                            Data.ChatCountSkipUpdate++;
+                        hasActivity = newPosts || anyDeliveredPosts;
 
-                        //в этой же процедуре делаем фоновую загрузку изображений с сервера
-                        GeneralTexture.Get.Update(connect);
+                        // Обновление графических ресурсов не должно забивать чатовый цикл.
+                        if (TryBeginTextureUpdate())
+                        {
+                            try
+                            {
+                                GeneralTexture.Get.Update(connect);
+                            }
+                            catch (Exception textureEx)
+                            {
+                                Loger.Log("Client GeneralTexture.Update exception: " + textureEx);
+                            }
+                        }
                     }
                     else
                     {
-                        //Loger.Log("Client UpdateChats f2");
+                        hadError = true;
                         Data.LastServerConnectFail = true;
-                        if (!Data.ServerConnected)
-                        {
-                            /*
-                            var th = new Thread(() =>
-                            {
-                                Loger.Log("Client ReconnectWithTimers not ping");
-                                if (!ReconnectWithTimers())
-                                {
-                                    Loger.Log("Client Disconnected after try reconnect");
-                                    Disconnected("OCity_SessionCC_Disconnected".Translate());
-                                }
-                            });
-                            th.IsBackground = true;
-                            th.Start();
-                            */
-                            Thread.Sleep(5000); //Ждем, когда CheckReconnectTimer срубит этот поток основного таймера 
-                        }
                     }
                     //to do Сделать сброс крутяшки после обновления чата (см. Dialog_MainOnlineCity)
                     UpdateColonyScreen();
                 }
                 catch (Exception ex)
                 {
+                    hadError = true;
                     Loger.Log(ex.ToString());
                 }
                 finally
                 {
                     ChatIsUpdating = false;
+                    ScheduleNextChatUpdate(hasActivity, hadError);
                     UpdateGlobalTooltip();
                 }
             });
@@ -1577,6 +1931,7 @@ namespace RimWorldOnlineCity
         {
             ReconnectSupportRuning = false;
             ResetUpdateWorldSchedule();
+            ResetChatSchedule();
             ResetSaveUploadState();
             Loger.Log("Client TimersStop b");
             if (TimerReconnect != null) TimerReconnect.Stop();
@@ -2698,6 +3053,8 @@ namespace RimWorldOnlineCity
 
             Loger.Log("Client Disconected :( " + msg);
             GameExit.BeforeExit = null;
+            VisitSession.ClearCurrent();
+            if (Data != null) Data.VisitHostResponding = false;
             TimersStop();
             SessionClient.Get.Disconnect();
             if (msg == null)
@@ -2938,6 +3295,7 @@ namespace RimWorldOnlineCity
                 ChatController.Init(true);
                 Data.UpdateTime = DateTime.MinValue;
                 ResetUpdateWorldSchedule();
+                ResetChatSchedule();
                 ResetSaveUploadState();
                 if (Timers == null || TimerReconnect == null)
                 {

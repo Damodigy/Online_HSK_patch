@@ -43,6 +43,7 @@ namespace RimWorldOnlineCity
         }
 
         public bool TestMode { get; set; }
+        private bool VisitDialogShown { get; set; }
 
         public int AttackUpdateTick { get; set; }
         private object TimerObj;
@@ -98,6 +99,7 @@ namespace RimWorldOnlineCity
 
         private bool CheckSpawnDestroyDisable { get; set; }
         private Object CheckSpawnDestroySunc { get; set; } = new Object();
+        private bool StartCaravanExtracted { get; set; }
 
         /// <summary>
         /// Истина, когда атакующий сдается. Флаг для передачи хосту и начала завершения
@@ -122,6 +124,9 @@ namespace RimWorldOnlineCity
 
         public void Start(Caravan caravan, BaseOnline attackedBase, bool testMode)
         {
+            TestMode = testMode;
+            StartCaravanExtracted = false;
+            VisitDialogShown = false;
             //Ожидается что Start будет запукаться с UI
             Find.TickManager.Pause();
             SessionClientController.Data.DontCheckTimerFail = true;
@@ -143,46 +148,73 @@ namespace RimWorldOnlineCity
                 });
                 if (!string.IsNullOrEmpty(res.ErrorText))
                 {
-                    ErrorBreak(res.ErrorText?.ServerTranslate());
+                    FailStart(res.ErrorText?.ServerTranslate());
                     return;
                 }
                 if (!string.IsNullOrEmpty(connect.ErrorMessage))
                 {
-                    ErrorBreak(connect.ErrorMessage?.ServerTranslate());
+                    FailStart(connect.ErrorMessage?.ServerTranslate());
                     return;
                 }
 
                 // ждем положительного ответа с статусом больше 2 и отправляем своих колонистов
                 Loger.Log("Client GameAttack State 1");
                 var s1Time = DateTime.UtcNow;
+                var waitHostTimeout = testMode ? 120 : 20;
                 while (true)
                 {
                     var res1 = connect.AttackOnlineInitiator(new AttackInitiatorToSrv()
                     {
                         State = 1
                     });
+                    if (res1 == null)
+                    {
+                        FailStart("No response from server");
+                        return;
+                    }
                     if (!string.IsNullOrEmpty(connect.ErrorMessage))
                     {
-                        ErrorBreak(connect.ErrorMessage?.ServerTranslate());
+                        FailStart(connect.ErrorMessage?.ServerTranslate());
+                        return;
+                    }
+                    if (!string.IsNullOrEmpty(res1?.ErrorText))
+                    {
+                        FailStart(res1.ErrorText?.ServerTranslate());
                         return;
                     }
                     if (res1.State == 2) break;
-                    if ((DateTime.UtcNow - s1Time).TotalSeconds > 20)
+                    if (res1.State >= 90)
                     {
-                        ErrorBreak("Timeout");
+                        FailStart("Host declined visit request");
+                        return;
+                    }
+                    if ((DateTime.UtcNow - s1Time).TotalSeconds > waitHostTimeout)
+                    {
+                        FailStart("Timeout waiting for host response");
                         return;
                     }
                 }
                 var pawnsToSend = GetPawnsAndDeleteCaravan(caravan);
+                StartCaravanExtracted = true;
                 AttackerOriginalPawnLabels = pawnsToSend.Select(p => p.Name).ToList();
                 var response = connect.AttackOnlineInitiator(new AttackInitiatorToSrv()
                 {
                     State = 2,
                     Pawns = pawnsToSend,
                 });
+                if (response == null)
+                {
+                    FailStart("No response from server");
+                    return;
+                }
                 if (!string.IsNullOrEmpty(connect.ErrorMessage))
                 {
-                    ErrorBreak(connect.ErrorMessage?.ServerTranslate());
+                    FailStart(connect.ErrorMessage?.ServerTranslate());
+                    return;
+                }
+                if (!string.IsNullOrEmpty(response?.ErrorText))
+                {
+                    FailStart(response.ErrorText?.ServerTranslate());
                     return;
                 }
                 TestMode = response.TestMode;
@@ -192,21 +224,37 @@ namespace RimWorldOnlineCity
 
                 Loger.Log("Client GameAttack WaitTo3");
                 s1Time = DateTime.UtcNow;
+                var waitMapTimeout = testMode ? 240 : 60;
                 while (true)
                 {
                     response = connect.AttackOnlineInitiator(new AttackInitiatorToSrv()
                     {
                         State = 3
                     });
+                    if (response == null)
+                    {
+                        FailStart("No response from server");
+                        return;
+                    }
                     if (!string.IsNullOrEmpty(connect.ErrorMessage))
                     {
-                        ErrorBreak(connect.ErrorMessage?.ServerTranslate());
+                        FailStart(connect.ErrorMessage?.ServerTranslate());
+                        return;
+                    }
+                    if (!string.IsNullOrEmpty(response?.ErrorText))
+                    {
+                        FailStart(response.ErrorText?.ServerTranslate());
                         return;
                     }
                     if (response.State >= 4) break;
-                    if ((DateTime.UtcNow - s1Time).TotalSeconds > 60)
+                    if (response.State >= 90)
                     {
-                        ErrorBreak("Timeout");
+                        FailStart("Visit request was canceled");
+                        return;
+                    }
+                    if ((DateTime.UtcNow - s1Time).TotalSeconds > waitMapTimeout)
+                    {
+                        FailStart("Timeout waiting for host map");
                         return;
                     }
                 }
@@ -321,6 +369,32 @@ namespace RimWorldOnlineCity
         /// Ошибка при создании карты
         /// </summary>
         /// <param name="msg"></param>
+        private void FailStart(string msg)
+        {
+            // После удаления каравана безопасный путь восстановления только через reconnect.
+            if (!TestMode || StartCaravanExtracted)
+            {
+                ErrorBreak(msg);
+                return;
+            }
+
+            Loger.Log("Client GameAttack start canceled: " + msg, Loger.LogLevel.WARNING);
+            Clear();
+
+            ModBaseData.RunMainThread(() =>
+            {
+                GameUtils.ShowDialodOKCancel(
+                    "OCity_Caravan_GoTrade2".Translate().ToString(),
+                    string.IsNullOrEmpty(msg) ? "Visit canceled" : msg,
+                    () => { },
+                    null);
+            });
+        }
+
+        /// <summary>
+        /// Фатальная ошибка активной сессии
+        /// </summary>
+        /// <param name="msg"></param>
         private void ErrorBreak(string msg)
         {
             Loger.Log("Client GameAttack error " + msg, Loger.LogLevel.ERROR);
@@ -379,16 +453,37 @@ namespace RimWorldOnlineCity
                     return;
                 }
 
-                //Scribe.ForceStop();
-                if (!Find.TickManager.Paused)
+                if (TestMode)
                 {
-                    Find.TickManager.Pause();
-                    GameUtils.ShowDialodOKCancel("OCity_GameAttacker_Dialog_Settlement_Attack".Translate()
-                        , "OCity_GameAttacker_Main_Dialog".Translate() + Environment.NewLine
-                            + "OCity_GameAttacker_Withdraw".Translate()
-                        , () => { }
-                        , null
-                    );
+                    if (!VisitDialogShown)
+                    {
+                        VisitDialogShown = true;
+                        GameUtils.ShowDialodOKCancel("OCity_Caravan_GoTrade2".Translate().ToString()
+                            , "Visit started. Your caravan is synchronized with host map."
+                            , () => { }
+                            , null
+                        );
+                    }
+
+                    if (Find.TickManager.CurTimeSpeed != TimeSpeed.Normal || Find.TickManager.Paused)
+                    {
+                        Find.TickManager.CurTimeSpeed = TimeSpeed.Normal;
+                    }
+                    GameAttackTrigger_Patch.ForceSpeed = 1f;
+                }
+                else
+                {
+                    //Scribe.ForceStop();
+                    if (!Find.TickManager.Paused)
+                    {
+                        Find.TickManager.Pause();
+                        GameUtils.ShowDialodOKCancel("OCity_GameAttacker_Dialog_Settlement_Attack".Translate()
+                            , "OCity_GameAttacker_Main_Dialog".Translate() + Environment.NewLine
+                                + "OCity_GameAttacker_Withdraw".Translate()
+                            , () => { }
+                            , null
+                        );
+                    }
                 }
 
                 if (InTimer) return;
@@ -595,7 +690,7 @@ namespace RimWorldOnlineCity
                                         errNums += "6 ";
                                         //создаем список пешек toClient.NewPawns
                                         GameUtils.SpawnList(GameMap, toClient.NewPawns, false
-                                            , (p) => p.TransportID == 0 //если без нашего ID, то у нас как пират
+                                            , (p) => !TestMode && p.TransportID == 0 //в co-op visit не помечаем пешек хоста как врагов
                                             , (th, te) =>
                                             {
                                                 if (CheckDestroy.ContainsKey(th.thingIDNumber)) CheckDestroy.Remove(th.thingIDNumber);
@@ -627,7 +722,10 @@ namespace RimWorldOnlineCity
                                                         //для нейтральных животных
                                                         //все созданые пешки или враги или игрока, но если у них нет признака TransportID, то делаем их нейтральными
                                                         //Loger.Log($"Client NewPawnsSpawnList {p.Label} CanHaveFaction {p.def.CanHaveFaction}, Humanlike {p.RaceProps.Humanlike}, Faction " + (p.Faction == null ? "null" : p.Faction.Name + " " + p.Faction.IsPlayer));
-                                                        if (p.def.CanHaveFaction /*&& !p.RaceProps.Humanlike*/ && p.Faction != null && p.Faction.IsPlayer)
+                                                        if (!TestMode
+                                                            && p.def.CanHaveFaction /*&& !p.RaceProps.Humanlike*/
+                                                            && p.Faction != null
+                                                            && p.Faction.IsPlayer)
                                                         {
                                                             p.SetFaction(null);
                                                         }
@@ -669,7 +767,7 @@ namespace RimWorldOnlineCity
                                         errNums += "8 ";
                                         //создаем список трупов пешек toClient.NewCorpses
                                         GameUtils.SpawnList(GameMap, toClient.NewCorpses.Select(c => c.CorpseWithPawn).ToList(), false
-                                            , (p) => p.TransportID == 0 //если без нашего ID, то у нас как пират
+                                            , (p) => !TestMode && p.TransportID == 0 //в co-op visit не помечаем пешек хоста как врагов
                                             , (th, te) =>
                                             {
                                                 //мы спавним пешку у которой в здоровье "труп", поэтому фактически спавница труп, внутри которого пешка
@@ -1007,7 +1105,7 @@ namespace RimWorldOnlineCity
                             catch (Exception exp)
                             {
                                 Loger.Log("Client CreateClearMap Event Exception: " + exp.ToString(), Loger.LogLevel.ERROR);
-                                ErrorBreak("Error CreateClearMap2");
+                                FailStart("Error CreateClearMap2");
                             }
                         }, "GeneratingMapForNewEncounter", false, null);
                     }
@@ -1019,7 +1117,7 @@ namespace RimWorldOnlineCity
                 catch (Exception exp)
                 {
                     Loger.Log("Client CreateClearMap Exception: " + exp.ToString());
-                    ErrorBreak("Error CreateClearMap1");
+                    FailStart("Error CreateClearMap1");
                 }
             }, "GeneratingMapForNewEncounter", false, null);
         }
@@ -1035,6 +1133,7 @@ namespace RimWorldOnlineCity
             SessionClientController.Data.AttackModule = null;
             SessionClientController.Data.BackgroundSaveGameOff = false;
             SessionClientController.Data.DontCheckTimerFail = false;
+            StartCaravanExtracted = false;
             GameAttackTrigger_Patch.ForceSpeed = -1f;
         }
 

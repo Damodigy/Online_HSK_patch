@@ -25,16 +25,42 @@ namespace ServerOnlineCity.Services
             return result;
         }
 
+        private static long BuildChatStateStamp(PlayerServer player)
+        {
+            unchecked
+            {
+                // Стабильный отпечаток состава/состояния чатов для short-circuit.
+                long hash = 1469598103934665603L;
+                foreach (var chatPair in player.Chats.OrderBy(c => c.Key.Id))
+                {
+                    var chat = chatPair.Key;
+                    hash = (hash ^ chat.Id) * 1099511628211L;
+                    hash = (hash ^ chat.Posts.Count) * 1099511628211L;
+                    hash = (hash ^ chat.LastChanged.Ticks) * 1099511628211L;
+                }
+                return hash;
+            }
+        }
+
         private ModelUpdateChat updateChat(ModelUpdateTime time, ServiceContext context)
         {
             lock (context.Player)
             {
+                var chatStateStamp = BuildChatStateStamp(context.Player);
                 var res = new ModelUpdateChat()
                 {
                     Time = DateTime.UtcNow,
-                    Chats = new List<Chat>(),
+                    Value = chatStateStamp,
                 };
                 bool fullRequest = time.Time == DateTime.MinValue;
+                if (!fullRequest && time.Value == chatStateStamp)
+                {
+                    // Ничего не изменилось с прошлого ответа, можно не сериализовать весь список чатов.
+                    res.Chats = null;
+                    return res;
+                }
+
+                res.Chats = new List<Chat>();
 
                 var myLogin = context.Player.Public.Login;
 

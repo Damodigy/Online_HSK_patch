@@ -12,6 +12,8 @@ namespace ServerOnlineCity.Model
 {
     public class AttackServer
     {
+        public const int VisitCleanupState = 90;
+
         /*
          *      
          * А0: 0 в 1 Атакующий пересылает айди объектов
@@ -63,23 +65,27 @@ namespace ServerOnlineCity.Model
         public bool VictoryHostToHost { get; set; }
         public bool TerribleFatalError { get; set; }
         public long AttackUpdateTick { get; set; }
+        public string VisitCancelReason { get; set; }
 
         private object SyncObj = new Object();
 
         public string New(PlayerServer player, PlayerServer hostPlayer, AttackInitiatorToSrv fromClient, bool testMode)
         {
-            if (!ServerManager.ServerSettings.GeneralSettings.EnablePVP) return "PVP online disable on this server";
+            if (!testMode && !ServerManager.ServerSettings.GeneralSettings.EnablePVP) return "PVP online disable on this server";
             if (!player.Online || !hostPlayer.Online)
             {
-                Loger.Log($"Server AttackServer {Attacker.Public.Login} -> {Host.Public.Login} canceled: Attack not possible: player offline");
+                Loger.Log($"Server AttackServer {player.Public.Login} -> {hostPlayer.Public.Login} canceled: Attack not possible: player offline");
                 return "Attack not possible: player offline";
             }
-            var err = AttackUtils.CheckPossibilityAttack(player, hostPlayer, fromClient.InitiatorPlaceServerId, fromClient.HostPlaceServerId
-                , ServerManager.ServerSettings.ProtectingNovice);
-            if (err != null)
+            if (!testMode)
             {
-                Loger.Log($"Server AttackServer {Attacker.Public.Login} -> {Host.Public.Login} canceled: {err}");
-                return err;
+                var err = AttackUtils.CheckPossibilityAttack(player, hostPlayer, fromClient.InitiatorPlaceServerId, fromClient.HostPlaceServerId
+                    , ServerManager.ServerSettings.ProtectingNovice);
+                if (err != null)
+                {
+                    Loger.Log($"Server AttackServer {player.Public.Login} -> {hostPlayer.Public.Login} canceled: {err}");
+                    return err;
+                }
             }
 
             TestMode = testMode;
@@ -120,6 +126,25 @@ namespace ServerOnlineCity.Model
             //Loger.Log($"Server AttackOnlineHost RequestHost State: {State} -> {fromClient.State}");
             lock (SyncObj)
             {
+                if (fromClient.State == VisitCleanupState)
+                {
+                    // Host can decline incoming visit request before map sync starts.
+                    if (TestMode && State <= 1)
+                    {
+                        State = VisitCleanupState;
+                        VisitCancelReason = "Host declined visit request";
+                        return new AttackHostFromSrv() { State = VisitCleanupState };
+                    }
+
+                    Finish();
+                    return new AttackHostFromSrv() { State = VisitCleanupState };
+                }
+
+                if (State == VisitCleanupState && TestMode)
+                {
+                    return new AttackHostFromSrv() { State = VisitCleanupState };
+                }
+
                 //первые 5 минут не проверяем на отключения, т.к. загрузка может быть долгой (а дисконектит уже после 10 сек)
                 if ((fromClient.State == 10 || (DateTime.UtcNow - CreateTime).TotalSeconds > 8*60)
                     && CheckConnect(false))
@@ -306,6 +331,26 @@ namespace ServerOnlineCity.Model
         {
             lock (SyncObj)
             {
+                if (fromClient.State == VisitCleanupState)
+                {
+                    Finish();
+                    return new AttackInitiatorFromSrv() { State = VisitCleanupState };
+                }
+
+                if (State == VisitCleanupState && TestMode)
+                {
+                    var reason = string.IsNullOrEmpty(VisitCancelReason)
+                        ? "Visit canceled by host"
+                        : VisitCancelReason;
+                    Finish();
+                    return new AttackInitiatorFromSrv()
+                    {
+                        State = VisitCleanupState,
+                        TestMode = true,
+                        ErrorText = reason
+                    };
+                }
+
                 //первые 5 минут не проверяем на отключения, т.к. загрузка может быть долгой (а дисконектит уже после 10 сек)
                 if ((fromClient.State == 10 || (DateTime.UtcNow - CreateTime).TotalSeconds > 8 * 60)
                     && CheckConnect(true))
@@ -459,6 +504,8 @@ namespace ServerOnlineCity.Model
 
         private void SendAttackCancel()
         {
+            if (Host == null || Attacker == null) return;
+
             var data = Repository.GetData;
             //команда хосту
             var packet = new ModelMailAttackCancel()
@@ -643,13 +690,15 @@ namespace ServerOnlineCity.Model
 
         public void Finish()
         {
-            Loger.Log($"Server AttackServer {Attacker.Public.Login} -> {Host.Public.Login} Finish StartTime sec = " 
+            var attackerLogin = Attacker?.Public?.Login ?? "?";
+            var hostLogin = Host?.Public?.Login ?? "?";
+            Loger.Log($"Server AttackServer {attackerLogin} -> {hostLogin} Finish StartTime sec = " 
                 + (StartTime == DateTime.MinValue ? "-" : (DateTime.UtcNow - StartTime).TotalSeconds.ToString())
                 + (VictoryAttacker == null ? "" : VictoryAttacker.Value ? " VictoryAttacker" : " VictoryHost")
                 + (TestMode ? " TestMode" : "")
                 + (TerribleFatalError ? " TerribleFatalError" : ""));
-            Attacker.AttackData = null;
-            Host.AttackData = null;
+            if (Attacker != null && Attacker.AttackData == this) Attacker.AttackData = null;
+            if (Host != null && Host.AttackData == this) Host.AttackData = null;
         }
     }
 }

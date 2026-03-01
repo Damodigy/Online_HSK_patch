@@ -1,4 +1,4 @@
-﻿using Model;
+using Model;
 using OCUnion;
 using OCUnion.Transfer.Model;
 using ServerOnlineCity.Model;
@@ -26,15 +26,20 @@ namespace ServerOnlineCity.Services
         {
             lock (context.Player)
             {
-                var timeNow = DateTime.UtcNow;
                 var data = Repository.GetData;
-                var res = new AttackInitiatorFromSrv()
-                {
-                };
+                var res = new AttackInitiatorFromSrv();
 
-                //инициализируем общий объект
                 if (fromClient.StartHostPlayer != null)
                 {
+                    // PvP combat is disabled; only safe test-mode visit sync is allowed.
+                    if (!fromClient.TestMode)
+                    {
+                        return new AttackInitiatorFromSrv()
+                        {
+                            ErrorText = "PvP/Attack module is temporarily disabled on this server"
+                        };
+                    }
+
                     if (context.Player.AttackData != null)
                     {
                         res.ErrorText = "There is an active attack";
@@ -62,17 +67,21 @@ namespace ServerOnlineCity.Services
                         return res;
                     }
                 }
+
                 if (context.Player.AttackData == null)
                 {
+                    // cleanup/ping after session closed - no hard error.
+                    if (fromClient.State == AttackServer.VisitCleanupState)
+                    {
+                        return new AttackInitiatorFromSrv() { State = AttackServer.VisitCleanupState };
+                    }
+
                     Loger.Log("Server AttackOnlineInitiator Unexpected error, no data", Loger.LogLevel.ERROR);
                     res.ErrorText = "Unexpected error, no data";
                     return res;
                 }
 
-                //передаем управление общему объекту
-                res = context.Player.AttackData.RequestInitiator(fromClient);
-
-                return res;
+                return context.Player.AttackData.RequestInitiator(fromClient);
             }
         }
     }

@@ -10,6 +10,7 @@ namespace Transfer
     public class ModelUpdateChat
     {
         public DateTime Time;
+        public long Value;
 
         public int LastChatPostId;
 

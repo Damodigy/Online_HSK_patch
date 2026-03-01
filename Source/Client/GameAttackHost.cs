@@ -47,12 +47,12 @@ namespace RimWorldOnlineCity
         /// <summary>
         /// Установить заданную скорость вместо нормальной 1
         /// </summary>
-        public float TickTimeSpeed { get; } = 0.5f;
+        public float TickTimeSpeed => TestMode ? 1f : 0.5f;
 
         /// <summary>
         /// Насколько изменяется скорость всех пешек кроме атакующих (для баланса)
         /// </summary>
-        public float HostPawnMoveSpeed { get; } = 0.5f;
+        public float HostPawnMoveSpeed => TestMode ? 1f : 0.5f;
 
         public bool TestMode { get; set; }
 
@@ -170,6 +170,8 @@ namespace RimWorldOnlineCity
         /// Замедлять защищающихся после минуты игры
         /// </summary>
         public bool HostPawnMoveSpeedActive =>
+            !TestMode
+            &&
             TimeStartGameAttack != DateTime.MinValue
             && TimeStartGameAttack.AddMinutes(1) < DateTime.UtcNow;
 
@@ -457,50 +459,71 @@ namespace RimWorldOnlineCity
                         
                         //создаем пешки
                         UIEventNewJobDisable = true;
-                        var cellPawns = GameUtils.SpawnCaravanPirate(GameMap, pawnsA,
-                            (th, te) =>
-                            {
-                                var p = th as Pawn;
-                                if (p == null) return;
-
-                                AttackingPawns.Add(p);
-                                AttackingPawnDic.Add(p.thingIDNumber, te.OriginalID);
-
-                                //задаем команду стоять и не двигаться (но стрелять если кто в радиусе)
-                                Loger.Log("Client GameAttackHost Start 9 StartJob Wait_Combat ");
-                                p.playerSettings.hostilityResponse = HostilityResponseMode.Ignore;
-                                p.jobs.StartJob(new Job(JobDefOf.Wait_Combat)
+                        var cellPawns = (TestMode
+                            ? GameUtils.SpawnList(GameMap, pawnsA, true, (p) => false
+                                , (th, te) =>
                                 {
-                                    playerForced = true,
-                                    expiryInterval = int.MaxValue,
-                                    checkOverrideOnExpire = false,
-                                }
-                                    , JobCondition.InterruptForced);
-                                /*
-                                if (p.Label == "Douglas, Клерк")
-                                {
-                                    //to do для теста не забыть удалить!
-                                    var pp = p;
-                                    var th = new Thread(() =>
+                                    var p = th as Pawn;
+                                    if (p == null) return;
+
+                                    AttackingPawns.Add(p);
+                                    AttackingPawnDic.Add(p.thingIDNumber, te.OriginalID);
+
+                                    //задаем команду стоять и не двигаться (но стрелять если кто в радиусе)
+                                    Loger.Log("Client GameAttackHost Start 9 StartJob Wait_Combat ");
+                                    p.playerSettings.hostilityResponse = HostilityResponseMode.Ignore;
+                                    p.jobs.StartJob(new Job(JobDefOf.Wait_Combat)
                                     {
-                                        Thread.Sleep(5000);
-                                        while (true)
+                                        playerForced = true,
+                                        expiryInterval = int.MaxValue,
+                                        checkOverrideOnExpire = false,
+                                    }
+                                        , JobCondition.InterruptForced);
+                                })
+                            : GameUtils.SpawnCaravanPirate(GameMap, pawnsA,
+                                (th, te) =>
+                                {
+                                    var p = th as Pawn;
+                                    if (p == null) return;
+
+                                    AttackingPawns.Add(p);
+                                    AttackingPawnDic.Add(p.thingIDNumber, te.OriginalID);
+
+                                    //задаем команду стоять и не двигаться (но стрелять если кто в радиусе)
+                                    Loger.Log("Client GameAttackHost Start 9 StartJob Wait_Combat ");
+                                    p.playerSettings.hostilityResponse = HostilityResponseMode.Ignore;
+                                    p.jobs.StartJob(new Job(JobDefOf.Wait_Combat)
+                                    {
+                                        playerForced = true,
+                                        expiryInterval = int.MaxValue,
+                                        checkOverrideOnExpire = false,
+                                    }
+                                        , JobCondition.InterruptForced);
+                                    /*
+                                    if (p.Label == "Douglas, Клерк")
+                                    {
+                                        //to do для теста не забыть удалить!
+                                        var pp = p;
+                                        var th = new Thread(() =>
                                         {
-                                            Thread.Sleep(1000);
-                                            try
+                                            Thread.Sleep(5000);
+                                            while (true)
                                             {
-                                                var jj = pp.jobs.curJob;
-                                                Loger.Log("Host ThreadTestJob " + pp.Label + " job=" + (jj == null ? "null" : jj.def.defName.ToString()));
+                                                Thread.Sleep(1000);
+                                                try
+                                                {
+                                                    var jj = pp.jobs.curJob;
+                                                    Loger.Log("Host ThreadTestJob " + pp.Label + " job=" + (jj == null ? "null" : jj.def.defName.ToString()));
+                                                }
+                                                catch
+                                                { }
                                             }
-                                            catch
-                                            { }
-                                        }
-                                    });
-                                    th.IsBackground = true;
-                                    th.Start();
-                                }
-                                */
-                            });
+                                        });
+                                        th.IsBackground = true;
+                                        th.Start();
+                                    }
+                                    */
+                                }));
                         UIEventNewJobDisable = false;
 
                         Loger.Log("Client GameAttackHost Start 10");

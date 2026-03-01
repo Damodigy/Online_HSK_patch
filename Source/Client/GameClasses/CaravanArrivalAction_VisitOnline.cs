@@ -35,6 +35,8 @@ namespace RimWorldOnlineCity
                 if (сaravanOnline == null) return "";
                 return string.Format(mode == "exchangeOfGoods" ? "OCity_Caravan_GoTrade".Translate()
                         : mode == "barter" ? "OCity_Dialog_Exchenge_Counterproposal".Translate()
+                        : mode == "visit" ? "OCity_Caravan_GoTrade2".Translate()
+                        : mode == "pveVisit" ? "OCity_Caravan_Practive".Translate()
                         : mode == "attack" ? "OCity_Caravan_Go_Attack_Target".Translate()
                         : "OCity_Caravan_GoTrade2".Translate()
                     , сaravanOnline.Label);
@@ -62,31 +64,43 @@ namespace RimWorldOnlineCity
             {
                 ExchengeUtils.Barter_DoAction(сaravanOnline, caravan);
             }
-            else if (mode == "attack")
+            else if (mode == "visit" || mode == "pveVisit" || mode == "attack")
             {
-                attack(caravan);
-            }
-        }
-
-        private void attack(Caravan caravan)
-        {
-            Find.TickManager.Pause();
-            Action<bool> att = (testMode) =>
-            {
-                if (GameAttacker.Create())
+                if (!GameAttacker.CanStart
+                    || SessionClientController.Data.AttackUsModule != null
+                    || SessionClientController.Data.VisitHostResponding)
                 {
-                    GameAttacker.Get.Start(caravan, (BaseOnline)сaravanOnline, testMode);
+                    GameUtils.ShowDialodOKCancel(
+                        "OCity_Caravan_GoTrade2".Translate().ToString(),
+                        "Visit session is already active",
+                        () => { },
+                        null);
+                    return;
                 }
-            };
 
-            GameUtils.ShowDialodOKCancel("OCity_Caravan_Go_Attack_Target".Translate() + " " + сaravanOnline.Label
-                , "OCity_Caravan_Confirm_Attack_TestBattle_Possible".Translate()
-                , () => att(false)
-                , () => { }
-                , null
-                , "OCity_Caravan_Practive".Translate()
-                , () => att(true)
-            );
+                var baseOnline = сaravanOnline as BaseOnline;
+                if (baseOnline == null)
+                {
+                    GameUtils.ShowDialodOKCancel(
+                        "OCity_Caravan_GoTrade2".Translate().ToString(),
+                        "Visit is available only for player bases",
+                        () => { },
+                        null);
+                    return;
+                }
+
+                if (!GameAttacker.Create() || GameAttacker.Get == null)
+                {
+                    GameUtils.ShowDialodOKCancel(
+                        "OCity_Caravan_GoTrade2".Translate().ToString(),
+                        "Visit session initialization failed",
+                        () => { },
+                        null);
+                    return;
+                }
+
+                GameAttacker.Get.Start(caravan, baseOnline, true);
+            }
         }
 
     }

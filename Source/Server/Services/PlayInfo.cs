@@ -14,6 +14,11 @@ namespace ServerOnlineCity.Services
 {
     internal sealed class PlayInfo : IGenerateResponseContainer
     {
+        private const int MaxSaveTransferBytes = 1024 * 1024 * 512; // 512 MB
+        private const int MaxSaveChunkBytes = 1024 * 1024 * 2; // 2 MB
+        private static readonly TimeSpan SaveTransferTimeout = TimeSpan.FromMinutes(20);
+        private static readonly TimeSpan SaveTransferCompletedKeep = TimeSpan.FromMinutes(5);
+
         public int RequestTypePackage => (int)PackageType.Request11;
 
         public int ResponseTypePackage => (int)PackageType.Response12;
@@ -62,21 +67,7 @@ namespace ServerOnlineCity.Services
                         //.Select(l => Repository.GetData.PlayersAllDic[l].Public)
                         .ToList();
                 }
-                if (packet.SaveFileData != null && packet.SaveFileData.Length > 0)
-                {
-                    Repository.GetSaveData.SavePlayerData(
-                        context.Player.Public.Login,
-                        packet.SaveFileData,
-                        packet.SingleSave,
-                        packet.SaveNumber,
-                        packet.SaveIsAuto);
-                    context.Player.Public.LastSaveTime = timeNow;
-
-                    //Действия при сохранении, оно происодит только здесь!
-                    context.Player.MailsConfirmationSave = new List<ModelMail>();
-
-                    Repository.Get.ChangeData = true;
-                }
+                ApplySavePayload(packet, context, toClient, timeNow);
                 if (context.Player.GetKeyReconnect())
                 {
                     toClient.KeyReconnect = context.Player.KeyReconnect1;
@@ -571,8 +562,14 @@ namespace ServerOnlineCity.Services
                 //команда выполнить сохранение и отключиться
                 toClient.NeedSaveAndExit = !context.Player.IsAdmin && data.EverybodyLogoff;
 
-                //флаг, что на клиента кто-то напал и он должен запросить подробности
-                toClient.AreAttacking = context.Player.AttackData != null && context.Player.AttackData.Host == context.Player && context.Player.AttackData.State == 1;
+                // Сигнал хосту: есть входящий visit-sync запрос (использует transport Request27/29).
+                toClient.AreAttacking = context.Player.AttackData != null
+                    && context.Player.AttackData.Host == context.Player
+                    && context.Player.AttackData.State == 1
+                    && context.Player.AttackData.TestMode;
+                toClient.IncomingVisitAttackerLogin = toClient.AreAttacking
+                    ? context.Player.AttackData.Attacker?.Public?.Login
+                    : null;
 
                 if (context.Player.LastUpdateWithMail = (toClient.Mails.Count > 0))
                 {
@@ -870,6 +867,195 @@ namespace ServerOnlineCity.Services
             }
 
             return false;
+        }
+
+        private static void ApplySavePayload(ModelPlayToServer packet, ServiceContext context, ModelPlayToClient toClient, DateTime timeNow)
+        {
+            var chunkData = packet.SaveFileData;
+            var hasChunkTransfer = !string.IsNullOrEmpty(packet.SaveTransferId) && packet.SaveTransferTotalLength > 0;
+
+            if (!hasChunkTransfer)
+            {
+                // Legacy-режим: сейв целиком в одном запросе.
+                if (chunkData != null && chunkData.Length > 0)
+                {
+                    Repository.GetSaveData.SavePlayerData(
+                        context.Player.Public.Login,
+                        chunkData,
+                        packet.SingleSave,
+                        packet.SaveNumber,
+                        packet.SaveIsAuto);
+                    context.Player.Public.LastSaveTime = timeNow;
+                    context.Player.MailsConfirmationSave = new List<ModelMail>();
+                    Repository.Get.ChangeData = true;
+                    context.Player.SaveTransfer = null;
+                }
+                else if (context.Player.SaveTransfer != null
+                    && (timeNow - context.Player.SaveTransfer.LastUpdateUtc) > SaveTransferTimeout)
+                {
+                    context.Player.SaveTransfer = null;
+                }
+                return;
+            }
+
+            if (chunkData == null || chunkData.Length <= 0)
+            {
+                FillSaveTransferResponse(toClient, packet.SaveTransferId, packet.SaveTransferTotalLength, 0, false,
+                    "Пустой чанк сейва.");
+                return;
+            }
+            if (chunkData.Length > MaxSaveChunkBytes)
+            {
+                FillSaveTransferResponse(toClient, packet.SaveTransferId, packet.SaveTransferTotalLength, 0, false,
+                    "Размер чанка превышает лимит.");
+                return;
+            }
+            if (packet.SaveTransferTotalLength <= 0 || packet.SaveTransferTotalLength > MaxSaveTransferBytes)
+            {
+                FillSaveTransferResponse(toClient, packet.SaveTransferId, packet.SaveTransferTotalLength, 0, false,
+                    "Недопустимый размер передачи сейва.");
+                context.Player.SaveTransfer = null;
+                return;
+            }
+            if (packet.SaveTransferOffset < 0 || packet.SaveTransferOffset > packet.SaveTransferTotalLength
+                || packet.SaveTransferOffset + chunkData.Length > packet.SaveTransferTotalLength)
+            {
+                FillSaveTransferResponse(toClient, packet.SaveTransferId, packet.SaveTransferTotalLength, 0, false,
+                    "Недопустимое смещение чанка.");
+                return;
+            }
+
+            var saveTransfer = context.Player.SaveTransfer;
+            if (saveTransfer != null && (timeNow - saveTransfer.LastUpdateUtc) > SaveTransferTimeout)
+            {
+                saveTransfer = null;
+                context.Player.SaveTransfer = null;
+            }
+
+            if (saveTransfer == null || !string.Equals(saveTransfer.TransferId, packet.SaveTransferId, StringComparison.Ordinal))
+            {
+                if (string.Equals(context.Player.SaveTransferLastCompletedId, packet.SaveTransferId, StringComparison.Ordinal)
+                    && (timeNow - context.Player.SaveTransferLastCompletedAt) <= SaveTransferCompletedKeep)
+                {
+                    FillSaveTransferResponse(toClient, packet.SaveTransferId, packet.SaveTransferTotalLength, packet.SaveTransferTotalLength, true, null);
+                    return;
+                }
+
+                if (packet.SaveTransferOffset != 0)
+                {
+                    FillSaveTransferResponse(toClient, packet.SaveTransferId, packet.SaveTransferTotalLength, 0, false,
+                        "Сервер ожидает начало передачи с нулевого смещения.");
+                    context.Player.SaveTransfer = null;
+                    return;
+                }
+
+                saveTransfer = new PlayerServer.SaveTransferContext()
+                {
+                    TransferId = packet.SaveTransferId,
+                    TotalLength = packet.SaveTransferTotalLength,
+                    ReceivedLength = 0,
+                    Buffer = new byte[packet.SaveTransferTotalLength],
+                    LastUpdateUtc = timeNow,
+                };
+                context.Player.SaveTransfer = saveTransfer;
+            }
+            else if (saveTransfer.TotalLength != packet.SaveTransferTotalLength)
+            {
+                if (packet.SaveTransferOffset == 0)
+                {
+                    saveTransfer.TotalLength = packet.SaveTransferTotalLength;
+                    saveTransfer.ReceivedLength = 0;
+                    saveTransfer.Buffer = new byte[packet.SaveTransferTotalLength];
+                }
+                else
+                {
+                    FillSaveTransferResponse(toClient, packet.SaveTransferId, packet.SaveTransferTotalLength, 0, false,
+                        "Размер передачи изменился, требуется начать заново.");
+                    context.Player.SaveTransfer = null;
+                    return;
+                }
+            }
+
+            var offset = packet.SaveTransferOffset;
+            if (offset < saveTransfer.ReceivedLength)
+            {
+                var duplicateChunkEnd = offset + chunkData.Length;
+                if (duplicateChunkEnd > saveTransfer.ReceivedLength)
+                {
+                    FillSaveTransferResponse(toClient, packet.SaveTransferId, saveTransfer.TotalLength, saveTransfer.ReceivedLength, false,
+                        "Неконсистентный повтор чанка.");
+                    return;
+                }
+
+                for (int i = 0; i < chunkData.Length; i++)
+                {
+                    if (saveTransfer.Buffer[offset + i] != chunkData[i])
+                    {
+                        FillSaveTransferResponse(toClient, packet.SaveTransferId, saveTransfer.TotalLength, saveTransfer.ReceivedLength, false,
+                            "Повторный чанк не совпадает по данным.");
+                        return;
+                    }
+                }
+                // Валидный повтор уже принятого чанка — просто подтверждаем текущий offset.
+            }
+            else if (offset > saveTransfer.ReceivedLength)
+            {
+                FillSaveTransferResponse(toClient, packet.SaveTransferId, saveTransfer.TotalLength, saveTransfer.ReceivedLength, false,
+                    "Ожидалось смещение " + saveTransfer.ReceivedLength.ToString() + ".");
+                return;
+            }
+            else
+            {
+                Buffer.BlockCopy(chunkData, 0, saveTransfer.Buffer, offset, chunkData.Length);
+                saveTransfer.ReceivedLength += chunkData.Length;
+            }
+
+            saveTransfer.LastUpdateUtc = timeNow;
+            var transferCompleted = saveTransfer.ReceivedLength >= saveTransfer.TotalLength;
+            if (packet.SaveTransferIsLast && !transferCompleted)
+            {
+                FillSaveTransferResponse(toClient, packet.SaveTransferId, saveTransfer.TotalLength, saveTransfer.ReceivedLength, false,
+                    "Отмечен последний чанк, но получены не все данные.");
+                return;
+            }
+
+            if (transferCompleted)
+            {
+                Repository.GetSaveData.SavePlayerData(
+                    context.Player.Public.Login,
+                    saveTransfer.Buffer,
+                    packet.SingleSave,
+                    packet.SaveNumber,
+                    packet.SaveIsAuto);
+
+                context.Player.Public.LastSaveTime = timeNow;
+                context.Player.MailsConfirmationSave = new List<ModelMail>();
+                Repository.Get.ChangeData = true;
+
+                context.Player.SaveTransferLastCompletedId = saveTransfer.TransferId;
+                context.Player.SaveTransferLastCompletedAt = timeNow;
+                context.Player.SaveTransfer = null;
+
+                FillSaveTransferResponse(toClient, packet.SaveTransferId, packet.SaveTransferTotalLength, packet.SaveTransferTotalLength, true, null);
+                return;
+            }
+
+            FillSaveTransferResponse(toClient, packet.SaveTransferId, saveTransfer.TotalLength, saveTransfer.ReceivedLength, false, null);
+        }
+
+        private static void FillSaveTransferResponse(
+            ModelPlayToClient toClient,
+            string transferId,
+            int totalLength,
+            int acceptedOffset,
+            bool completed,
+            string error)
+        {
+            toClient.SaveTransferId = transferId;
+            toClient.SaveTransferTotalLength = totalLength;
+            toClient.SaveTransferAcceptedOffset = Math.Max(0, acceptedOffset);
+            toClient.SaveTransferCompleted = completed;
+            toClient.SaveTransferError = error;
         }
 
         private static bool ContainsIgnoreCase(string text, string token)

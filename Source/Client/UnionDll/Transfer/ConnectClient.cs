@@ -29,6 +29,8 @@ namespace Transfer
         public ConnectClient(TcpClient client)
         {
             Client = client;
+            Client.NoDelay = true;
+            Client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
             Client.SendTimeout = DefaultTimeout;
             Client.ReceiveTimeout = DefaultTimeout;
             ClientStream = Client.GetStream();
@@ -130,21 +132,20 @@ namespace Transfer
                 var receiveId = Interlocked.Increment(ref ReceiveId);
                 ClientStream.BeginRead(receiveBuffer, 0, maxCountRead, ReceiveBytescallback, receiveId);
 
-                while (!ReceiveReady.ContainsKey(receiveId)
-                    && timeOut > DateTime.UtcNow)
-                    Thread.Sleep(1);
-
+                object objRes = null;
                 lock (ReceiveReady)
                 {
-                    if (ReceiveReady.ContainsKey(receiveId))
+                    while (!ReceiveReady.TryGetValue(receiveId, out objRes))
                     {
-                        var objRes = ReceiveReady[receiveId];
-                        if (objRes is Exception) throw (Exception)objRes;
-                        numberOfBytesRead = (int)ReceiveReady[receiveId];
-                        ReceiveReady.Remove(receiveId);
+                        var waitMs = (int)(timeOut - DateTime.UtcNow).TotalMilliseconds;
+                        if (waitMs <= 0) break;
+                        Monitor.Wait(ReceiveReady, waitMs > 50 ? 50 : waitMs);
                     }
-                    else
-                        throw new ConnectSilenceTimeOutException();
+
+                    if (objRes == null) throw new ConnectSilenceTimeOutException();
+                    if (objRes is Exception) throw (Exception)objRes;
+                    numberOfBytesRead = (int)objRes;
+                    ReceiveReady.Remove(receiveId);
                 }
 
                 if (!Client.Client.Connected)
@@ -193,7 +194,8 @@ namespace Transfer
             var receiveId = (long)ar.AsyncState;
             lock(ReceiveReady)
             {
-                ReceiveReady.Add(receiveId, (object)exc ?? numberOfBytesRead);
+                ReceiveReady[receiveId] = (object)exc ?? numberOfBytesRead;
+                Monitor.PulseAll(ReceiveReady);
             }
         }
 

@@ -142,6 +142,16 @@ namespace RimWorldOnlineCity
         /// </summary>
         public GameAttackHost AttackUsModule { get; set; } = null;
 
+        /// <summary>
+        /// Если не null, значит сейчас активна сессия безопасного посещения чужого объекта.
+        /// </summary>
+        public VisitSession VisitModule { get; set; } = null;
+
+        /// <summary>
+        /// Истина, если клиент сейчас обрабатывает входящий запрос на выдачу snapshot карты для визита.
+        /// </summary>
+        public bool VisitHostResponding { get; set; } = false;
+
         public string ServerName { get; set; }
 
         public int DelaySaveGame { get; set; } = 15;
@@ -177,6 +187,8 @@ namespace RimWorldOnlineCity
 
         public bool ApplyChats(ModelUpdateChat updateDate)
         {
+            if (updateDate?.Chats == null) return false;
+
             //переводим сообщения с сервера
             for (int ic = 0; ic < updateDate.Chats.Count; ic++)
             {

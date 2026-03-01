@@ -18,7 +18,10 @@ namespace Transfer
 
         public static void AddClient(ConnectClient client, Action<ConnectClient> ping)
         {
-            Clients.Add(client, ping);
+            lock (Clients)
+            {
+                Clients[client] = ping;
+            }
             StartWorker();
         }
 
@@ -32,30 +35,56 @@ namespace Transfer
 
         private static void WorkerDo()
         {
-            while (Clients.Count > 0)
+            while (true)
             {
                 Thread.Sleep(60000);
                 var now = DateTime.UtcNow.AddMinutes(2);
-
-                lock (Clients)    // for resolving System.InvalidOperationException: 'Коллекция была изменена; невозможно выполнить операцию перечисления.'              
+                List<KeyValuePair<ConnectClient, Action<ConnectClient>>> clientsSnapshot;
+                lock (Clients)
                 {
-                    foreach (var client in Clients.Keys)
+                    if (Clients.Count == 0)
                     {
-                        if (!client.Client.Connected)
-                        {
-                            Clients.Remove(client);
-                            continue;
-                        }
-                        if (now > client.LastSend)
+                        Worker = null;
+                        return;
+                    }
+                    clientsSnapshot = Clients.ToList();
+                }
+
+                var toRemove = new List<ConnectClient>();
+
+                foreach (var kvp in clientsSnapshot)
+                {
+                    var client = kvp.Key;
+                    if (client == null || client.Client == null || !client.Client.Connected)
+                    {
+                        toRemove.Add(client);
+                        continue;
+                    }
+                    if (now > client.LastSend)
+                    {
+                        try
                         {
                             //запуск пинга через 2-3 мин после последнего обращения (в т.ч. пинга)
-                            Clients[client](client);
+                            kvp.Value(client);
+                        }
+                        catch
+                        {
+                            toRemove.Add(client);
+                        }
+                    }
+                }
+
+                if (toRemove.Count > 0)
+                {
+                    lock (Clients)
+                    {
+                        foreach (var client in toRemove)
+                        {
+                            if (client != null) Clients.Remove(client);
                         }
                     }
                 }
             }
-
-            Worker = null;
         }
     }
 }

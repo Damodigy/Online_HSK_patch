@@ -330,7 +330,6 @@ namespace Transfer
 
         public ModelUpdateChat UpdateChat(ModelUpdateTime modelUpdate)
         {
-            Loger.Log("Client UpdateChat " + modelUpdate.Time.ToGoodUtcString());
             var packet = modelUpdate;
             var stat = TransObject<ModelUpdateChat>(packet, (int)PackageType.Request17, (int)PackageType.Response18);
     

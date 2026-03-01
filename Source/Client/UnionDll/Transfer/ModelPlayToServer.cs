@@ -28,6 +28,22 @@ namespace Transfer
         /// Истина, если сохранение относится к автослотам.
         /// </summary>
         public bool SaveIsAuto { get; set; }
+        /// <summary>
+        /// Идентификатор чанковой передачи сейва. Если пусто, используется legacy-режим (SaveFileData как целый сейв).
+        /// </summary>
+        public string SaveTransferId { get; set; }
+        /// <summary>
+        /// Смещение чанка в исходном сейве.
+        /// </summary>
+        public int SaveTransferOffset { get; set; }
+        /// <summary>
+        /// Полный размер исходного сейва.
+        /// </summary>
+        public int SaveTransferTotalLength { get; set; }
+        /// <summary>
+        /// Признак последнего чанка в передаче.
+        /// </summary>
+        public bool SaveTransferIsLast { get; set; }
         public long LastTick { get; set; }
         public PlayerGameProgress GameProgress { get; set; }
         public List<string> GetPlayersInfo { get; set; }

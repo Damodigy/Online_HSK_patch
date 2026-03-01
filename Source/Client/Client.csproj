@@ -158,6 +158,7 @@
     <Compile Include="GameClasses\BaseOnline.cs" />
     <Compile Include="GameClasses\CaravanArrivalAction_VisitOnline.cs" />
     <Compile Include="GameClasses\CaravanOnline.cs" />
+    <Compile Include="GameClasses\VisitSession.cs" />
     <Compile Include="CommonUtils.cs" />
     <Compile Include="GameClasses\Harmony\GameFix.cs" />
     <Compile Include="GameClasses\Harmony\GamePatch.cs" />

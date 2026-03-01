@@ -56,6 +56,12 @@ namespace OCUnion
 
         public bool ApplyChats(ModelUpdateChat updateDate, ref string newStr)
         {
+            if (updateDate?.Chats == null)
+            {
+                newStr = "";
+                return false;
+            }
+
             int newPost = 0;
             newStr = "";
             if (Chats != null)

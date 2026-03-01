@@ -60,10 +60,32 @@ namespace ServerOnlineCity.Model
 
         public DateTime SaveDataPacketTime;
 
+        [NonSerialized]
+        [XmlIgnore]
+        public SaveTransferContext SaveTransfer;
+
+        [NonSerialized]
+        [XmlIgnore]
+        public string SaveTransferLastCompletedId;
+
+        [NonSerialized]
+        [XmlIgnore]
+        public DateTime SaveTransferLastCompletedAt;
+
         public DateTime LastUpdateTime;
 
         [XmlIgnore]
         public List<ModelMail> Mails = new List<ModelMail>();
+
+        [Serializable]
+        public sealed class SaveTransferContext
+        {
+            public string TransferId;
+            public int TotalLength;
+            public int ReceivedLength;
+            public byte[] Buffer;
+            public DateTime LastUpdateUtc;
+        }
 
         /// <summary>
         /// Письма из уже ушедшие игроку, но ещё ожидающие сохранения его игры после получения. 
@@ -359,6 +381,7 @@ namespace ServerOnlineCity.Model
             MailsConfirmationSave = new List<ModelMail>();
             FunctionMails = new List<IFunctionMail>();
             TradeThingStorages = new List<TradeThingStorage>();
+            SaveTransfer = null;
 
             Repository.GetSaveData.DeletePlayerData(Public.Login);
             Public.LastSaveTime = DateTime.MinValue;

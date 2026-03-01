@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Model;
 using OCUnion;
 using OCUnion.Transfer.Model;
@@ -25,23 +25,22 @@ namespace ServerOnlineCity.Services
         {
             lock (context.Player)
             {
-                var timeNow = DateTime.UtcNow;
-                var data = Repository.GetData;
-                var res = new AttackHostFromSrv()
-                {
-                };
+                var res = new AttackHostFromSrv();
 
                 if (context.Player.AttackData == null)
                 {
+                    // cleanup/ping after session closed - no hard error.
+                    if (fromClient.State == AttackServer.VisitCleanupState)
+                    {
+                        return new AttackHostFromSrv() { State = AttackServer.VisitCleanupState };
+                    }
+
                     Loger.Log("Server AttackOnlineHost Unexpected error, no data", Loger.LogLevel.ERROR);
                     res.ErrorText = "Unexpected error, no data";
                     return res;
                 }
 
-                //передаем управление общему объекту
-                res = context.Player.AttackData.RequestHost(fromClient);
-
-                return res;
+                return context.Player.AttackData.RequestHost(fromClient);
             }
         }
     }

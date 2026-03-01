@@ -74,10 +74,7 @@ namespace RimWorldOnlineCity
                         , OnlineWObject.MarketValuePawn.ToStringMoney()
                         , (OnlineWObject.MarketValueBalance + OnlineWObject.MarketValueStorage).ToStringMoney()
                         )
-                    + ((this is BaseOnline) && SessionClientController.My.EnablePVP
-                        ? Environment.NewLine + "OCity_Caravan_PlayerAttackCost".Translate(
-                            AttackUtils.MaxCostAttackerCaravan(OnlineWObject.MarketValueTotal, this is BaseOnline).ToStringMoney()).ToString()
-                        : "")
+                    + ""
                     + (OnlineWObject.FreeWeight > 0 && OnlineWObject.FreeWeight < 999999
                         ? Environment.NewLine + "OCity_Caravan_FreeWeight".Translate().ToString() + OnlineWObject.FreeWeight.ToStringMass()
                         : "");
@@ -102,10 +99,7 @@ namespace RimWorldOnlineCity
                         , "<:busts_in_silhouette height=16:> " + OnlineWObject.MarketValuePawn.ToStringMoney()
                         , "<:chart_increasing height=16:> " + (OnlineWObject.MarketValueBalance + OnlineWObject.MarketValueStorage).ToStringMoney()
                         )
-                    + ((this is BaseOnline) && SessionClientController.My.EnablePVP
-                        ? Environment.NewLine + "OCity_Caravan_PlayerAttackCost".Translate(
-                            AttackUtils.MaxCostAttackerCaravan(OnlineWObject.MarketValueTotal, this is BaseOnline).ToStringMoney()).ToString()
-                        : "")
+                    + ""
                     + (OnlineWObject.FreeWeight > 0 && OnlineWObject.FreeWeight < 999999
                         ? Environment.NewLine + "OCity_Caravan_FreeWeight".Translate().ToString() + " <:handbag height=16:> " + OnlineWObject.FreeWeight.ToStringMass()
                         : "");
@@ -168,26 +162,31 @@ namespace RimWorldOnlineCity
             }
             yield return fmoBarter;
 
-            // Атаковать
-            if (SessionClientController.My.EnablePVP
-                && this is BaseOnline
-                && player != null
-                && GameAttacker.CanStart)
+            // Временный безопасный режим: посещение базы без PvP
+            if (this is BaseOnline
+                && player != null)
             {
                 FloatMenuOption fmo;
                 try
                 {
-                    var dis = AttackUtils.CheckPossibilityAttack(SessionClientController.Data.MyEx
-                        , player
-                        , UpdateWorldController.GetMyByLocalId(caravan.ID).PlaceServerId
-                        , this.OnlineWObject.PlaceServerId
-                        , SessionClientController.Data.ProtectingNovice
-                        );
-                    fmo = new FloatMenuOption("OCity_Caravan_Attack".Translate(OnlinePlayerLogin + " " + OnlineName)
+                    var myWObject = UpdateWorldController.GetMyByLocalId(caravan.ID);
+                    var myPlaceServerId = myWObject?.PlaceServerId ?? 0;
+                    var dis = myPlaceServerId <= 0
+                        ? "Caravan is not synced with server yet"
+                        : this.OnlineWObject.PlaceServerId <= 0
+                            ? "Target is not synced with server yet"
+                            : !player.Online
+                                ? "Host not online"
+                                : !(GameAttacker.CanStart
+                                    && SessionClientController.Data.AttackUsModule == null
+                                    && !SessionClientController.Data.VisitHostResponding)
+                                    ? "Visit session is already active"
+                                : null;
+                    fmo = new FloatMenuOption("OCity_Caravan_GoTrade2".Translate() + ": " + OnlinePlayerLogin + " " + OnlineName
                         + (dis != null ? " (" + dis + ")" : "")
                         , delegate
                     {
-                        caravan.pather.StartPath(this.Tile, new CaravanArrivalAction_VisitOnline(this, "attack"), true);
+                        caravan.pather.StartPath(this.Tile, new CaravanArrivalAction_VisitOnline(this, "visit"), true);
                     }, MenuOptionPriority.Default, null, null, 0f, null, this);
 
                     if (dis != null)
