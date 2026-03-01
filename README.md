@@ -7,6 +7,17 @@ OnlineCity is a mod for RimWorld that allows players to connect to an online ser
 
 The goal of the mod is to make it possible to play RimWorld with friends without ruining the balance or immersion of the game. The mod is currently in early development, and only contains minimal features to enable you to play with your friends.
 
+## Fork Status (HSK)
+This repository is a fork of the original OnlineCity mod for RimWorld.
+
+### Что добавлено в этом форке (Damodigy)
+- `8bbd447` (2026-02-25): стабилизация подключения, создания мира с фракциями общего, обновления мира общего, создания поселений (1.5) и синхронизации фракций.
+- `87f964a` (2026-02-26): обновление системы сохранений и dev/build/deploy-процесса, дополнительные фиксы клиент/сервер.
+- `5a32d9d` (2026-02-26): добавлены UI и серверные обработчики сохранений игрока, плюс тесты для сохранений.
+- `1acd5c7` (2026-02-27): релиз `alpha v-0.2.1`.
+- `a613185` (2026-03-01): alpha-функции World Storyteller, бартер между игроками, глобальные события на карте с распространением фракций и новые типы городов с лутом.
+- Для RimWorld `1.5` добавлена поддержка в метаданных мода (`About/About.xml`).
+
 # OnlineCity
 OnlineCity мод для игры RimWorld
 Автор Василий Иванов aka Aant
