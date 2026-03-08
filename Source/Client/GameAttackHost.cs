@@ -577,31 +577,28 @@ namespace RimWorldOnlineCity
                         AttackHostFromSrv toClient;
                         lock (ToSendListsSync)
                         {
-                            var mapPawnsA = GameMap.mapPawns.AllPawnsSpawned.ToArray();
-                            AllPawns = mapPawnsA.ToDictionary(p => p.thingIDNumber);
+                            var mapPawnsA = GameMap.mapPawns.AllPawnsSpawned;
+                            AllPawns.Clear();
 
                             //проверяем условия победы (в мирном визите их нет)
 
                             //                      Loger.Log("Client HostAttackUpdate 1");
                             //обновляем списки
-                            var mapPawnsIdExt = new HashSet<int>(AllPawns.Keys);
-                            mapPawnsIdExt.SymmetricExceptWith(SendedPawnsId); //новые пешки + те что на сервере, но их уже нет на карте
-                            if (mapPawnsIdExt.Count > 0)
+                            foreach (var p in mapPawnsA)
                             {
-                                var toSendAddId = new HashSet<int>(mapPawnsIdExt);
-                                toSendAddId.ExceptWith(SendedPawnsId); //только новые пешки
-                                if (toSendAddId.Count > 0)
+                                int id = p.thingIDNumber;
+                                AllPawns[id] = p;
+                                if (!SendedPawnsId.Contains(id))
                                 {
-                                    toSendAddId.ExceptWith(ToSendAddId); //исключаем те, которые уже есть в списке
-                                    ToSendAddId.AddRange(toSendAddId);
+                                    if (!ToSendAddId.Contains(id)) ToSendAddId.Add(id);
                                 }
+                            }
 
-                                var toSendDeleteId = new HashSet<int>(mapPawnsIdExt);
-                                toSendDeleteId.IntersectWith(SendedPawnsId); //только те, что на сервере но их уже нет на карте
-                                if (toSendDeleteId.Count > 0)
+                            foreach (int id in SendedPawnsId)
+                            {
+                                if (!AllPawns.ContainsKey(id))
                                 {
-                                    toSendDeleteId.ExceptWith(ToSendDeleteId); //исключаем те, которые уже есть в списке
-                                    ToSendDeleteId.AddRange(toSendDeleteId);
+                                    if (!ToSendDeleteId.Contains(id)) ToSendDeleteId.Add(id);
                                 }
                             }
                             //отложенная отправка полных данных по пешкам
@@ -634,7 +631,7 @@ namespace RimWorldOnlineCity
 
                                 //отправляем те, которые к отложенной отправке
                                 SendDelayedFillPawnsLastTime = DateTime.UtcNow;
-                                ToSendDelayedFillPawnsId.IntersectWith(AllPawns.Keys); //только те, которые на карте
+                                ToSendDelayedFillPawnsId.RemoveWhere(id => !AllPawns.ContainsKey(id)); //только те, которые на карте
                                 ToSendDelayedFillPawnsId.ExceptWith(ToSendAddId); //исключаем те, которые уже есть в списке
                                 ToSendAddId.AddRange(ToSendDelayedFillPawnsId);
 
@@ -690,21 +687,33 @@ namespace RimWorldOnlineCity
                             }
 
                             //новые вещи
-                            var newThings = ToSendThingAdd
-                                .Where(thing => !ToSendDeleteId.Contains(thing.thingIDNumber) && !(thing is Corpse))
-                                .Where(thc => !TestMode || !(thc is Blueprint || thc is Frame || thc.def.category == ThingCategory.Mote || thc.def.category == ThingCategory.Gas || thc.def.category == ThingCategory.Projectile || thc.def.category == ThingCategory.Attachment || thc.def.category == ThingCategory.Ethereal || thc.def.IsFilth || (thc.def.category == ThingCategory.Plant && (thc.def.plant == null || !thc.def.plant.IsTree))))
-                                .Select(thing => ThingTrade.CreateTrade(thing, thing.stackCount, false))
-                                .ToList();
-                            //трупы
-                            var newCorpses = ToSendThingAdd
-                                .Where(thing => !ToSendDeleteId.Contains(thing.thingIDNumber) && thing is Corpse)
-                                .Select(thing => new AttackCorpse()
+                            var newThings = new List<ThingEntry>();
+                            var newCorpses = new List<AttackCorpse>();
+                            foreach (var thing in ToSendThingAdd)
+                            {
+                                if (ToSendDeleteId.Contains(thing.thingIDNumber)) continue;
+
+                                if (thing is Corpse corpse)
                                 {
-                                    CorpseId = thing.thingIDNumber,
-                                    PawnId = (thing as Corpse).InnerPawn.thingIDNumber,
-                                    CorpseWithPawn = ThingEntry.CreateEntry((thing as Corpse).InnerPawn, 1)
-                                })
-                                .ToList();
+                                    newCorpses.Add(new AttackCorpse()
+                                    {
+                                        CorpseId = thing.thingIDNumber,
+                                        PawnId = corpse.InnerPawn.thingIDNumber,
+                                        CorpseWithPawn = ThingEntry.CreateEntry(corpse.InnerPawn, 1)
+                                    });
+                                }
+                                else
+                                {
+                                    if (TestMode)
+                                    {
+                                        if (thing is Blueprint || thing is Frame || thing.def.category == ThingCategory.Mote || thing.def.category == ThingCategory.Gas || thing.def.category == ThingCategory.Projectile || thing.def.category == ThingCategory.Attachment || thing.def.category == ThingCategory.Ethereal || thing.def.IsFilth || (thing.def.category == ThingCategory.Plant && (thing.def.plant == null || !thing.def.plant.IsTree)))
+                                        {
+                                            continue;
+                                        }
+                                    }
+                                    newThings.Add(ThingTrade.CreateTrade(thing, thing.stackCount, false));
+                                }
+                            }
                             foreach (var item in ToSendThingAdd)
                             {
                                 SendedActual[item.thingIDNumber] = item;

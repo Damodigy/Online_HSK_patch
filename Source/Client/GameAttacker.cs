@@ -542,16 +542,7 @@ namespace RimWorldOnlineCity
                     }
                 }
 
-                if (AttackUpdateTick == 3)
-                {
-                    GameUtils.ShowDialodOKCancel("OCity_GameAttacker_Dialog_Settlement_Attack".Translate()
-                        , "OCity_GameAttacker_Main_Preparation_Dialog".Translate() + Environment.NewLine
-                            + "OCity_GameAttacker_Main_Dialog".Translate() + Environment.NewLine
-                            + "OCity_GameAttacker_Withdraw".Translate()
-                        , () => { }
-                        , null
-                    );
-                }
+
 
                 inTimerEvent = true;
                 SessionClientController.Command((connect) =>
