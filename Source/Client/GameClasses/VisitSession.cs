@@ -437,6 +437,7 @@ namespace RimWorldOnlineCity
             cellRect.ClipInsideMap(hostMap);
             var addedPawns = 0;
             var addedThings = 0;
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             if (includeTerrain)
             {
@@ -487,6 +488,14 @@ namespace RimWorldOnlineCity
                         Loger.Log("VisitSession skip thing in snapshot: " + ex.Message, Loger.LogLevel.WARNING);
                     }
                 }
+                
+                // HSK workaround: bail out early if we've spent more than 45 seconds assembling the packet
+                // to avoid Unity crash/disconnect (usually MainThreadSync allows up to 120s, but we pad it)
+                if (stopwatch.ElapsedMilliseconds > 80000)
+                {
+                    Loger.Log("VisitSession host snapshot interrupted to prevent timeout. Map is too large.");
+                    break;
+                }
             }
 
             if (MainHelper.DebugMode)
@@ -511,8 +520,12 @@ namespace RimWorldOnlineCity
             if (thing is Blueprint || thing is Frame) return false;
             if (thing.def.category == ThingCategory.Pawn) return false;
             if (thing.def.category == ThingCategory.Mote) return false;
+            if (thing.def.category == ThingCategory.Gas) return false;
+            if (thing.def.category == ThingCategory.Projectile) return false;
+            if (thing.def.category == ThingCategory.Attachment) return false;
+            if (thing.def.category == ThingCategory.Ethereal) return false;
             if (thing.def.IsFilth) return false;
-            if (thing.def.category == ThingCategory.Plant && (thing.def.plant == null || !thing.def.plant.IsTree)) return false;
+            if (thing.def.plant != null && !thing.def.plant.IsTree) return false;
             return true;
         }
 
@@ -529,8 +542,12 @@ namespace RimWorldOnlineCity
                 return !string.IsNullOrEmpty(trade.Data);
             }
             if (def.category == ThingCategory.Mote) return false;
+            if (def.category == ThingCategory.Gas) return false;
+            if (def.category == ThingCategory.Projectile) return false;
+            if (def.category == ThingCategory.Attachment) return false;
+            if (def.category == ThingCategory.Ethereal) return false;
             if (def.IsFilth) return false;
-            if (def.category == ThingCategory.Plant && (def.plant == null || !def.plant.IsTree)) return false;
+            if (def.plant != null && !def.plant.IsTree) return false;
             if (trade.DefName == "Corpse" || trade.DefName == "MinifiedThing") return false;
             return true;
         }
@@ -541,8 +558,12 @@ namespace RimWorldOnlineCity
             if (thing is Corpse || thing is MinifiedThing) return false;
             if (thing is Blueprint || thing is Frame) return false;
             if (thing.def.category == ThingCategory.Mote) return false;
+            if (thing.def.category == ThingCategory.Gas) return false;
+            if (thing.def.category == ThingCategory.Projectile) return false;
+            if (thing.def.category == ThingCategory.Attachment) return false;
+            if (thing.def.category == ThingCategory.Ethereal) return false;
             if (thing.def.IsFilth) return false;
-            if (thing.def.category == ThingCategory.Plant && (thing.def.plant == null || !thing.def.plant.IsTree)) return false;
+            if (thing.def.plant != null && !thing.def.plant.IsTree) return false;
             if (thing is Pawn pawn && (pawn.DestroyedOrNull() || pawn.Dead)) return false;
             return true;
         }

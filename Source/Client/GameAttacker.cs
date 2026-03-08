@@ -42,9 +42,9 @@ namespace RimWorldOnlineCity
             get { return SessionClientController.Data.AttackModule; }
         }
 
-        public bool TestMode { get; set; }
+        public bool TestMode { get; set; } = true;
         private bool VisitDialogShown { get; set; }
-        private string SessionTag => TestMode ? "GameVisit" : "GameAttack";
+        private string SessionTag => "GameVisit";
 
         public int AttackUpdateTick { get; set; }
         private object TimerObj;
@@ -123,9 +123,9 @@ namespace RimWorldOnlineCity
         {
         }
 
-        public void Start(Caravan caravan, BaseOnline attackedBase, bool testMode)
+        public void Start(Caravan caravan, BaseOnline attackedBase, bool testMode = true)
         {
-            TestMode = testMode;
+            TestMode = true;
             StartCaravanExtracted = false;
             VisitDialogShown = false;
             //Ожидается что Start будет запукаться с UI
@@ -145,7 +145,7 @@ namespace RimWorldOnlineCity
                     StartHostPlayer = attackedBase.Player.Public.Login,
                     HostPlaceServerId = attackedBase.OnlineWObject.PlaceServerId,
                     InitiatorPlaceServerId = UpdateWorldController.GetServerInfo(caravan).PlaceServerId,
-                    TestMode = testMode,
+                    TestMode = true,
                 });
                 if (!string.IsNullOrEmpty(res.ErrorText))
                 {
@@ -291,16 +291,36 @@ namespace RimWorldOnlineCity
                     CheckSpawn = new Dictionary<int, Thing>();
                     for (int i = 0; i < response.ThingCell.Count; i++)
                     {
-                        var current = response.ThingCell[i].Get();
-                        var tt = response.Thing[i];
-                        var th = tt.CreateThing();
-                        GenSpawn.Spawn(th, current, map, new Rot4(tt.Rotation), WipeMode.Vanish);
-                        //словарь сопоставления ID их и сейчас созданный (их из OriginalID, наш ID)
-                        if (tt.OriginalID != 0 && th.thingIDNumber != 0)
+                        try 
                         {
-                            ThingsIDDicRev[tt.OriginalID] = th.thingIDNumber;
-                            ThingsIDDic[th.thingIDNumber] = tt.OriginalID;
-                            ThingsObjDic[th.thingIDNumber] = th;
+                            var current = response.ThingCell[i].Get();
+                            var tt = response.Thing[i];
+                            
+                            if (TestMode && !string.IsNullOrEmpty(tt.DefName))
+                            {
+                                var def = DefDatabase<ThingDef>.GetNamed(tt.DefName, false);
+                                if (def != null && (def.category == ThingCategory.Mote || def.category == ThingCategory.Gas || def.category == ThingCategory.Projectile || def.category == ThingCategory.Attachment || def.category == ThingCategory.Ethereal || def.IsFilth || (def.category == ThingCategory.Plant && (def.plant == null || !def.plant.IsTree)) || tt.DefName == "Corpse" || tt.DefName == "MinifiedThing")) continue;
+                            }
+
+                            var th = tt.CreateThing();
+                            
+                            if (TestMode)
+                            {
+                                if (th is Corpse || th is MinifiedThing || th is Blueprint || th is Frame) continue;
+                            }
+
+                            GenSpawn.Spawn(th, current, map, new Rot4(tt.Rotation), WipeMode.Vanish);
+                            //словарь сопоставления ID их и сейчас созданный (их из OriginalID, наш ID)
+                            if (tt.OriginalID != 0 && th.thingIDNumber != 0)
+                            {
+                                ThingsIDDicRev[tt.OriginalID] = th.thingIDNumber;
+                                ThingsIDDic[th.thingIDNumber] = tt.OriginalID;
+                                ThingsObjDic[th.thingIDNumber] = th;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Loger.Log("GameAttacker CreateMap thing spawn failed: " + ex.Message, Loger.LogLevel.WARNING);
                         }
                     }
 
@@ -373,7 +393,7 @@ namespace RimWorldOnlineCity
         private void FailStart(string msg)
         {
             // После удаления каравана безопасный путь восстановления только через reconnect.
-            if (!TestMode || StartCaravanExtracted)
+            if (StartCaravanExtracted)
             {
                 ErrorBreak(msg);
                 return;
@@ -401,15 +421,7 @@ namespace RimWorldOnlineCity
             Loger.Log("Client " + SessionTag + " error " + msg, Loger.LogLevel.ERROR);
 
             Clear();
-
-            if (TestMode)
-            {
-                SessionClientController.Disconnected("Visit session error");
-            }
-            else
-            {
-                SessionClientController.Disconnected("OCity_GameAttacker_Dialog_ErrorMessage".Translate());
-            }
+            SessionClientController.Disconnected("Visit session error");
         }
 
         private List<ThingEntry> GetPawnsAndDeleteCaravan(Caravan caravan)
@@ -461,38 +473,21 @@ namespace RimWorldOnlineCity
                     return;
                 }
 
-                if (TestMode)
+                if (!VisitDialogShown)
                 {
-                    if (!VisitDialogShown)
-                    {
-                        VisitDialogShown = true;
-                        GameUtils.ShowDialodOKCancel("OCity_Caravan_GoTrade2".Translate().ToString()
-                            , "Visit started. Your caravan is synchronized with host map."
-                            , () => { }
-                            , null
-                        );
-                    }
+                    VisitDialogShown = true;
+                    GameUtils.ShowDialodOKCancel("OCity_Caravan_GoTrade2".Translate().ToString()
+                        , "Visit started. Your caravan is synchronized with host map."
+                        , () => { }
+                        , null
+                    );
+                }
 
-                    if (Find.TickManager.CurTimeSpeed != TimeSpeed.Normal || Find.TickManager.Paused)
-                    {
-                        Find.TickManager.CurTimeSpeed = TimeSpeed.Normal;
-                    }
-                    GameAttackTrigger_Patch.ForceSpeed = 1f;
-                }
-                else
+                if (Find.TickManager.CurTimeSpeed != TimeSpeed.Normal || Find.TickManager.Paused)
                 {
-                    //Scribe.ForceStop();
-                    if (!Find.TickManager.Paused)
-                    {
-                        Find.TickManager.Pause();
-                        GameUtils.ShowDialodOKCancel("OCity_GameAttacker_Dialog_Settlement_Attack".Translate()
-                            , "OCity_GameAttacker_Main_Dialog".Translate() + Environment.NewLine
-                                + "OCity_GameAttacker_Withdraw".Translate()
-                            , () => { }
-                            , null
-                        );
-                    }
+                    Find.TickManager.CurTimeSpeed = TimeSpeed.Normal;
                 }
+                GameAttackTrigger_Patch.ForceSpeed = 1f;
 
                 if (InTimer) return;
                 InTimer = true;
@@ -775,7 +770,7 @@ namespace RimWorldOnlineCity
                                         errNums += "8 ";
                                         //создаем список трупов пешек toClient.NewCorpses
                                         GameUtils.SpawnList(GameMap, toClient.NewCorpses.Select(c => c.CorpseWithPawn).ToList(), false
-                                            , (p) => !TestMode && p.TransportID == 0 //в co-op visit не помечаем пешек хоста как врагов
+                                            , (p) => false //в co-op visit не помечаем пешек хоста как врагов
                                             , (th, te) =>
                                             {
                                                 //мы спавним пешку у которой в здоровье "труп", поэтому фактически спавница труп, внутри которого пешка
@@ -1155,82 +1150,20 @@ namespace RimWorldOnlineCity
             GameAttackTrigger_Patch.ForceSpeed = -1f;
         }
 
-        public void Finish(bool victoryAttacker)
+        public void Finish()
         {
             Find.TickManager.Pause();
-            Loger.Log("Client AttackerFinish");
-
             Clear();
 
-            if (TestMode)
-            {
-                GameUtils.ShowDialodOKCancel("OCity_GameAttacker_Dialog_Settlement_Attack".Translate()
-                    , victoryAttacker
-                        ? "Ocity_GameAttacker_TrainingFight_Won".Translate() + Environment.NewLine +
-                            "Ocity_GameAttacker_TrainingFight_Caravan_Restore".Translate()
-                        : "Ocity_GameAttacker_TrainingFight_Lost".Translate() + Environment.NewLine +
-                            "Ocity_GameAttacker_TrainingFight_Caravan_Restore".Translate()
-                    , () =>
-                    {
-                        SessionClientController.Disconnected("OCity_GameAttacker_Done".Translate());
-                    }
-                    , null
-                );
-                return;
-            }
-            if (victoryAttacker)
-            {
-                ModBaseData.RunMainThreadSync(() =>
+            GameUtils.ShowDialodOKCancel(
+                "OCity_Caravan_GoTrade2".Translate().ToString() //"OCity_GameAttacker_Settlement_Attacking".Translate(HostLogin)
+                , "Visit complete"
+                , () =>
                 {
-                    //переделать карту в постоянную
-
-                    //переводим всех врагов в нейтральные, кроме людй (Humanlike)
-                    var mapPawnsA = GameMap.mapPawns.AllPawnsSpawned.ToArray();
-                    foreach (var pawn in mapPawnsA)
-                    {
-                        //Loger.Log($"Client AttackerFinish {pawn.Label} CanHaveFaction {pawn.def.CanHaveFaction}, Humanlike {pawn.RaceProps.Humanlike}, Faction " + (pawn.Faction == null ? "null" : pawn.Faction.Name + " " + pawn.Faction.IsPlayer));
-                        if (!pawn.def.CanHaveFaction || pawn.RaceProps.Humanlike || pawn.Faction == null || pawn.Faction.IsPlayer) continue;
-                        //Loger.Log($"Client AttackerFinish SetFaction null {pawn.Label}");
-                        pawn.SetFaction(null);
-                    }
-                });
-            }
-            else
-            {
-                //на этом месте у атакующего: из всех пешек что с краю создать караван, а карту удалить
-                var listPawn = AttackerPawns.Keys
-                    .Where(pawn =>
-                        !pawn.Dead
-                        && !pawn.Downed
-                        && (pawn.Position.x < MapBorder || pawn.Position.x > GameMap.Size.x - 1 - MapBorder
-                            || pawn.Position.z < MapBorder || pawn.Position.z > GameMap.Size.z - 1 - MapBorder))
-                    .ToList();
-                Caravan caravan = CaravanMaker.MakeCaravan(listPawn, Faction.OfPlayer, GameMap.Tile, false);
-                Find.WorldObjects.Remove(GameMap.Parent);
-                //добавляем пешки в мир, чтобы их не уничтожили
-                foreach(var pawn in listPawn)
-                {
-                    if (!pawn.IsWorldPawn())
-                    {
-                        Find.WorldPawns.PassToWorld(pawn, PawnDiscardDecideMode.Decide);
-                    }
+                    SessionClientController.Disconnected("OCity_GameAttacker_Done".Translate());
                 }
-            }
-
-            //автосейв с единым сохранением
-            SessionClientController.SaveGameNow(true, () =>
-            {
-                GameUtils.ShowDialodOKCancel("OCity_GameAttacker_Dialog_Settlement_Attack".Translate()
-                    , victoryAttacker
-                        ? "OCity_GameAttacker_Settlement_TakenOver".Translate()
-                        : "OCity_GameAttacker_Defeated".Translate() + Environment.NewLine +
-                            "OCity_GameAttacker_Colonist_Return".Translate()
-                    , () => { }
-                    , null
-                );
-            });
-
-            Loger.Log("Client AttackerFinish end");
+                , null
+            );
         }
     }
 }

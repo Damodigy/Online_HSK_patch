@@ -47,12 +47,12 @@ namespace RimWorldOnlineCity
         /// <summary>
         /// Установить заданную скорость вместо нормальной 1
         /// </summary>
-        public float TickTimeSpeed => TestMode ? 1f : 0.5f;
+        public float TickTimeSpeed => 1f;
 
         /// <summary>
         /// Насколько изменяется скорость всех пешек кроме атакующих (для баланса)
         /// </summary>
-        public float HostPawnMoveSpeed => TestMode ? 1f : 0.5f;
+        public float HostPawnMoveSpeed => 1f;
 
         public bool TestMode { get; set; }
 
@@ -167,29 +167,10 @@ namespace RimWorldOnlineCity
         public bool IsPause => CurrentPauseToTime > DateTime.UtcNow;
 
         /// <summary>
-        /// Замедлять защищающихся после минуты игры
-        /// </summary>
-        public bool HostPawnMoveSpeedActive =>
-            !TestMode
-            &&
-            TimeStartGameAttack != DateTime.MinValue
-            && TimeStartGameAttack.AddMinutes(1) < DateTime.UtcNow;
-
-        /// <summary>
         /// Начало нападения, снятия с паузы
         /// </summary>
         public DateTime TimeStartGameAttack = DateTime.MinValue;
 
-        /// <summary>
-        /// Когда было обнаружено условие победы (все пешки одной из сторон недееспособны).
-        /// Равно DateTime.MaxValue, если в текущий момент такого нет.
-        /// </summary>
-        private DateTime CheckVictoryTime = DateTime.MaxValue;
-
-        /// <summary>
-        /// Если не null, значит атака завершена. True если победил атакующий
-        /// </summary>
-        public bool? ConfirmedVictoryAttacker { get; set; }
         /// <summary>
         /// Произошла ужасная ошибка, и всё нужно отменить. Когда истина, перестаём что-либо делать и ждем от сервера команды на перезапуск
         /// </summary>
@@ -231,16 +212,10 @@ namespace RimWorldOnlineCity
         private void PauseMessage()
         {
             GameUtils.ShowDialodOKCancel(
-                TestMode
-                    ? "OCity_GameAttack_Host_Test_Attack".Translate(AttackerLogin)
-                    : "OCity_GameAttack_Host_Settlement_Attacking".Translate(AttackerLogin)
-                , TestMode
-                    ? "OCity_GameAttack_Host_GameSpeed_Lock_Dialog".Translate() + Environment.NewLine
-                        + "OCity_GameAttack_Host_Cancel_Action".Translate() + Environment.NewLine
-                        + "OCity_GameAttack_Host_Surrender".Translate()
-                    : "OCity_GameAttack_Host_GameSpeed_Lock_Dialog".Translate() + Environment.NewLine
-                        + "OCity_GameAttack_Host_GameSpeed_Lock_Dialog2".Translate() + Environment.NewLine
-                        + "OCity_GameAttack_Host_Surrender".Translate()
+                "OCity_GameAttack_Host_Test_Attack".Translate(AttackerLogin)
+                , "OCity_GameAttack_Host_GameSpeed_Lock_Dialog".Translate() + Environment.NewLine
+                    + "OCity_GameAttack_Host_Cancel_Action".Translate() + Environment.NewLine
+                    + "OCity_GameAttack_Host_Surrender".Translate()
                 , () => { }
                 , null
             );
@@ -322,30 +297,55 @@ namespace RimWorldOnlineCity
                     //скалы, преграды и строения без пешек и без растений не деревьев, вывести кол-во
                     SendedActual = new Dictionary<int, Thing>();
                     Loger.Log("Client GameAttackHost Start 5");
+                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                     foreach (IntVec3 current in cellRect)
                     {
                         foreach (Thing thc in GameMap.thingGrid.ThingsAt(current).ToList<Thing>())
                         {
                             if (thc is Pawn) continue;
+                            if (TestMode) 
+                            {
+                                if (thc is Blueprint || thc is Frame) continue;
+                                if (thc.def.category == ThingCategory.Mote) continue;
+                                if (thc.def.category == ThingCategory.Gas) continue;
+                                if (thc.def.category == ThingCategory.Projectile) continue;
+                                if (thc.def.category == ThingCategory.Attachment) continue;
+                                if (thc.def.category == ThingCategory.Ethereal) continue;
+                                if (thc.def.IsFilth) continue;
+                            }
 
                             if (thc is Fire) FireList.Add(thc as Fire);
 
                             //из растений оставляем только деревья
-                            var isPlant = thc.def.category == ThingCategory.Plant && !thc.def.plant.IsTree;
-                            if (PlantNotSend)
+                            var isPlant = thc.def.category == ThingCategory.Plant && (thc.def.plant == null || !thc.def.plant.IsTree);
+                            if (TestMode || PlantNotSend)
                             {
                                 if (isPlant) continue;
                             }
 
                             if (thc.Position != current) continue;
 
-                            var tt = ThingTrade.CreateTrade(thc, thc.stackCount, false);
+                            try
+                            {
+                                var tt = ThingTrade.CreateTrade(thc, thc.stackCount, false);
 
-                            toSrvMap.ThingCell.Add(new IntVec3S(current));
-                            toSrvMap.Thing.Add(tt);
+                                toSrvMap.ThingCell.Add(new IntVec3S(current));
+                                toSrvMap.Thing.Add(tt);
 
-                            if (!isPlant) SendedActual[thc.thingIDNumber] = thc;
+                                if (!isPlant) SendedActual[thc.thingIDNumber] = thc;
+                            }
+                            catch (Exception ex)
+                            {
+                                Loger.Log("GameAttackHost skip thing in Start: " + ex.Message, Loger.LogLevel.WARNING);
+                            }
+                        }
 
+                        // HSK workaround: bail out early if we've spent more than 45 seconds assembling the packet
+                        // to avoid Unity crash/disconnect (usually MainThreadSync allows up to 120s, but we pad it)
+                        if (stopwatch.ElapsedMilliseconds > 80000)
+                        {
+                            Loger.Log("GameAttackHost start snapshot interrupted to prevent timeout. Map is too large.");
+                            break;
                         }
                     }
 
@@ -459,8 +459,7 @@ namespace RimWorldOnlineCity
                         
                         //создаем пешки
                         UIEventNewJobDisable = true;
-                        var cellPawns = (TestMode
-                            ? GameUtils.SpawnList(GameMap, pawnsA, true, (p) => false
+                        var cellPawns = GameUtils.SpawnList(GameMap, pawnsA, true, (p) => false
                                 , (th, te) =>
                                 {
                                     var p = th as Pawn;
@@ -469,61 +468,17 @@ namespace RimWorldOnlineCity
                                     AttackingPawns.Add(p);
                                     AttackingPawnDic.Add(p.thingIDNumber, te.OriginalID);
 
-                                    //задаем команду стоять и не двигаться (но стрелять если кто в радиусе)
+                                    //задаем команду стоять и не двигаться
                                     Loger.Log("Client GameAttackHost Start 9 StartJob Wait_Combat ");
                                     p.playerSettings.hostilityResponse = HostilityResponseMode.Ignore;
-                                    p.jobs.StartJob(new Job(JobDefOf.Wait_Combat)
+                                    /*p.jobs.StartJob(new Job(JobDefOf.Wait_Combat)
                                     {
                                         playerForced = true,
                                         expiryInterval = int.MaxValue,
                                         checkOverrideOnExpire = false,
                                     }
-                                        , JobCondition.InterruptForced);
-                                })
-                            : GameUtils.SpawnCaravanPirate(GameMap, pawnsA,
-                                (th, te) =>
-                                {
-                                    var p = th as Pawn;
-                                    if (p == null) return;
-
-                                    AttackingPawns.Add(p);
-                                    AttackingPawnDic.Add(p.thingIDNumber, te.OriginalID);
-
-                                    //задаем команду стоять и не двигаться (но стрелять если кто в радиусе)
-                                    Loger.Log("Client GameAttackHost Start 9 StartJob Wait_Combat ");
-                                    p.playerSettings.hostilityResponse = HostilityResponseMode.Ignore;
-                                    p.jobs.StartJob(new Job(JobDefOf.Wait_Combat)
-                                    {
-                                        playerForced = true,
-                                        expiryInterval = int.MaxValue,
-                                        checkOverrideOnExpire = false,
-                                    }
-                                        , JobCondition.InterruptForced);
-                                    /*
-                                    if (p.Label == "Douglas, Клерк")
-                                    {
-                                        //to do для теста не забыть удалить!
-                                        var pp = p;
-                                        var th = new Thread(() =>
-                                        {
-                                            Thread.Sleep(5000);
-                                            while (true)
-                                            {
-                                                Thread.Sleep(1000);
-                                                try
-                                                {
-                                                    var jj = pp.jobs.curJob;
-                                                    Loger.Log("Host ThreadTestJob " + pp.Label + " job=" + (jj == null ? "null" : jj.def.defName.ToString()));
-                                                }
-                                                catch
-                                                { }
-                                            }
-                                        });
-                                        th.IsBackground = true;
-                                        th.Start();
-                                    }
-                                    */
-                                }));
+                                        , JobCondition.InterruptForced);*/
+                                });
                         UIEventNewJobDisable = false;
 
                         Loger.Log("Client GameAttackHost Start 10");
@@ -625,28 +580,7 @@ namespace RimWorldOnlineCity
                             var mapPawnsA = GameMap.mapPawns.AllPawnsSpawned.ToArray();
                             AllPawns = mapPawnsA.ToDictionary(p => p.thingIDNumber);
 
-                            //проверяем условия победы (в паузе не проверяются, как проверка чтобы не проверялось до полной загрузки)
-                            if (!IsPause && ConfirmedVictoryAttacker == null)
-                            {
-                                var vic = CheckAttackerVictory();
-                                if (vic == null)
-                                {
-                                    if (CheckVictoryTime != DateTime.MaxValue) CheckVictoryTime = DateTime.MaxValue;
-                                }
-                                else
-                                {
-                                    Loger.Log($"Client CheckAttackerVictory {vic.Value}");
-                                    if (CheckVictoryTime == DateTime.MaxValue)
-                                    {
-                                        CheckVictoryTime = DateTime.UtcNow;
-                                    }
-                                    else if ((DateTime.UtcNow - CheckVictoryTime).TotalSeconds > CheckVictoryDelay)
-                                    {
-                                        ConfirmedVictoryAttacker = vic;
-                                    }
-                                }
-                            }
-                            if (ConfirmedVictoryAttacker != null) Finish(ConfirmedVictoryAttacker.Value);
+                            //проверяем условия победы (в мирном визите их нет)
 
                             //                      Loger.Log("Client HostAttackUpdate 1");
                             //обновляем списки
@@ -758,6 +692,7 @@ namespace RimWorldOnlineCity
                             //новые вещи
                             var newThings = ToSendThingAdd
                                 .Where(thing => !ToSendDeleteId.Contains(thing.thingIDNumber) && !(thing is Corpse))
+                                .Where(thc => !TestMode || !(thc is Blueprint || thc is Frame || thc.def.category == ThingCategory.Mote || thc.def.category == ThingCategory.Gas || thc.def.category == ThingCategory.Projectile || thc.def.category == ThingCategory.Attachment || thc.def.category == ThingCategory.Ethereal || thc.def.IsFilth || (thc.def.category == ThingCategory.Plant && (thc.def.plant == null || !thc.def.plant.IsTree))))
                                 .Select(thing => ThingTrade.CreateTrade(thing, thing.stackCount, false))
                                 .ToList();
                             //трупы
@@ -1312,55 +1247,12 @@ namespace RimWorldOnlineCity
 
         /// <summary>
         /// Изменяем скорость пешек от 1 до 450 (см. Pawn.TicksPerMove)
-        /// </summary>
-        /// <param name="pawn"></param>
-        /// <param name="speed"></param>
-        public void ControlPawnMoveSpeed(Pawn pawn, ref float speed)
-        {
-            if (!HostPawnMoveSpeedActive) return;
-
-            if (!AttackingPawnDic.ContainsKey(pawn.thingIDNumber))
-            {
-                speed /= HostPawnMoveSpeed;
-                if (speed < 1f) speed = 1f;
-                if (speed > 450f) speed = 450f;
-            }
-        }
-
-        private bool? CheckAttackerVictory()
-        {
-            bool existHostPawn = false;
-            bool existArrackerPawn = false;
-
-            foreach (var pawn in AllPawns.Values)
-            {
-                if (!existArrackerPawn
-                    && AttackingPawnDic.ContainsKey(pawn.thingIDNumber)
-                    && pawn.RaceProps.Humanlike
-                    && !pawn.Dead
-                    && !pawn.Downed)
-                {
-                    existArrackerPawn = true;
-                }
-                if (!existHostPawn
-                    && pawn.IsColonist
-                    && !pawn.Dead
-                    && !pawn.Downed)
-                {
-                    existHostPawn = true;
-                }
-            }
-            return existHostPawn && existArrackerPawn
-                ? (bool?)null
-                : existArrackerPawn;
-        }
-
         /// <summary>
-        /// Принудительная остановка режима pvp
+        /// Принудительная остановка режима
         /// </summary>
         public void Clear()
         {
-            //отключить таймер и признаки, что нас атакуют
+            //отключить таймер
             if (TimerObj != null) SessionClientController.Timers.Remove(TimerObj);
             if (GameMap != null) GameAttackTrigger_Patch.ActiveAttackHost.Remove(GameMap);
             SessionClientController.Data.AttackUsModule = null;
@@ -1369,66 +1261,20 @@ namespace RimWorldOnlineCity
             GameAttackTrigger_Patch.ForceSpeed = -1f;
         }
 
-        public void Finish(bool victoryAttacker)
+        public void Finish()
         {
             Find.TickManager.Pause();
-
             Clear();
 
-            if (TestMode)
-            {
-                GameUtils.ShowDialodOKCancel(
-                    TestMode
-                        ? "OCity_GameAttack_Host_Test_Attack".Translate(AttackerLogin)
-                        : "OCity_GameAttack_Host_Settlement_Attacking".Translate(AttackerLogin)
-                    , victoryAttacker
-                        ? "Ocity_GameAttacker_TrainingFight_Lost".Translate() + Environment.NewLine +
-                            "OCity_GameAttack_Host_Card_Restored".Translate()
-                        : "OCity_GameAttack_Host_Training_Attack_Repulsed".Translate() + Environment.NewLine +
-                            "OCity_GameAttack_Host_Card_Restored".Translate()
-                    , () =>
-                    {
-                        SessionClientController.Disconnected("OCity_GameAttacker_Done".Translate());
-                    }
-                    , null
-                );
-                return;
-            }
-            if (victoryAttacker)
-            {
-                //удалить свою колонию
-                Find.WorldObjects.Remove(GameMap.Parent);
-            }
-            else
-            {
-                //удалить всех чужих пешек с краев карты (они сбежали)
-                foreach (var pawn in AttackingPawns)
+            GameUtils.ShowDialodOKCancel(
+                "OCity_GameAttack_Host_Test_Attack".Translate(AttackerLogin)
+                , "Visit complete"
+                , () =>
                 {
-                    if (!pawn.Dead
-                        && !pawn.Downed
-                        && (pawn.Position.x < MapBorder || pawn.Position.x > GameMap.Size.x - 1 - MapBorder
-                            || pawn.Position.z < MapBorder || pawn.Position.z > GameMap.Size.z - 1 - MapBorder))
-                    {
-                        GameUtils.PawnDestroy(pawn);
-                    }
+                    SessionClientController.Disconnected("OCity_GameAttacker_Done".Translate());
                 }
-            }
-
-            //автосейв с единым сохранением
-            SessionClientController.SaveGameNow(true, () =>
-            {
-                GameUtils.ShowDialodOKCancel(
-                    TestMode
-                        ? "OCity_GameAttack_Host_Test_Attack".Translate(AttackerLogin)
-                        : "OCity_GameAttack_Host_Settlement_Attacking".Translate(AttackerLogin)
-                    , victoryAttacker
-                        ? "OCity_GameAttack_Host_Caravan_TransferToNewOwner".Translate()
-                        : "OCity_GameAttack_Host_Atack_Repulsed".Translate() + Environment.NewLine +
-                            "OCity_GameAttack_Host_Stranded_EnemiesLostCommander_Touch".Translate()
-                    , () => { }
-                    , null
-                );
-            });
+                , null
+            );
         }
     }
 }
