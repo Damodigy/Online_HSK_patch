@@ -44,6 +44,7 @@ namespace RimWorldOnlineCity
 
         public bool TestMode { get; set; }
         private bool VisitDialogShown { get; set; }
+        private string SessionTag => TestMode ? "GameVisit" : "GameAttack";
 
         public int AttackUpdateTick { get; set; }
         private object TimerObj;
@@ -137,7 +138,7 @@ namespace RimWorldOnlineCity
                 connect.ErrorMessage = null;
                 Find.TickManager.Pause();
 
-                Loger.Log("Client GameAttack State 0");
+                Loger.Log("Client " + SessionTag + " State 0");
                 var res = connect.AttackOnlineInitiator(new AttackInitiatorToSrv()
                 {
                     State = 0,
@@ -158,7 +159,7 @@ namespace RimWorldOnlineCity
                 }
 
                 // ждем положительного ответа с статусом больше 2 и отправляем своих колонистов
-                Loger.Log("Client GameAttack State 1");
+                Loger.Log("Client " + SessionTag + " State 1");
                 var s1Time = DateTime.UtcNow;
                 var waitHostTimeout = testMode ? 120 : 20;
                 while (true)
@@ -220,9 +221,9 @@ namespace RimWorldOnlineCity
                 TestMode = response.TestMode;
 
                 // принимаем карту и создаем
-                Loger.Log("Client GameAttack CreateMap State=" + response.State + " TestMode=" + TestMode);
+                Loger.Log("Client " + SessionTag + " CreateMap State=" + response.State + " TestMode=" + TestMode);
 
-                Loger.Log("Client GameAttack WaitTo3");
+                Loger.Log("Client " + SessionTag + " WaitTo3");
                 s1Time = DateTime.UtcNow;
                 var waitMapTimeout = testMode ? 240 : 60;
                 while (true)
@@ -378,7 +379,7 @@ namespace RimWorldOnlineCity
                 return;
             }
 
-            Loger.Log("Client GameAttack start canceled: " + msg, Loger.LogLevel.WARNING);
+            Loger.Log("Client " + SessionTag + " start canceled: " + msg, Loger.LogLevel.WARNING);
             Clear();
 
             ModBaseData.RunMainThread(() =>
@@ -397,11 +398,18 @@ namespace RimWorldOnlineCity
         /// <param name="msg"></param>
         private void ErrorBreak(string msg)
         {
-            Loger.Log("Client GameAttack error " + msg, Loger.LogLevel.ERROR);
+            Loger.Log("Client " + SessionTag + " error " + msg, Loger.LogLevel.ERROR);
 
             Clear();
 
-            SessionClientController.Disconnected("OCity_GameAttacker_Dialog_ErrorMessage".Translate());
+            if (TestMode)
+            {
+                SessionClientController.Disconnected("Visit session error");
+            }
+            else
+            {
+                SessionClientController.Disconnected("OCity_GameAttacker_Dialog_ErrorMessage".Translate());
+            }
         }
 
         private List<ThingEntry> GetPawnsAndDeleteCaravan(Caravan caravan)
@@ -1073,7 +1081,6 @@ namespace RimWorldOnlineCity
                                         || gs.defName == "Terrain"
                                         || gs.defName == "CavesTerrain"
                                         || gs.defName == "FindPlayerStartSpot"
-                                        || gs.defName == "ScenParts"
                                         || gs.defName == "Fog") //Animals
                                     .ToList()
                             };
@@ -1096,6 +1103,17 @@ namespace RimWorldOnlineCity
 
                                 Loger.Log("Client CreateClearMap 7");
                                 GenDebug.ClearArea(cellRect, map);
+                                // Defensive cleanup: avoid random scenario pawns from modded generators.
+                                foreach (var pawn in map.mapPawns.AllPawnsSpawned.ToList())
+                                {
+                                    try
+                                    {
+                                        pawn.Destroy();
+                                    }
+                                    catch
+                                    {
+                                    }
+                                }
 
                                 Loger.Log("Client CreateClearMap 8");
                                 ready(map, mapParent);

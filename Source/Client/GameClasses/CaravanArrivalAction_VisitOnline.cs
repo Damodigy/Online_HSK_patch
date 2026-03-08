@@ -64,11 +64,50 @@ namespace RimWorldOnlineCity
             {
                 ExchengeUtils.Barter_DoAction(сaravanOnline, caravan);
             }
-            else if (mode == "visit" || mode == "pveVisit" || mode == "attack")
+            else if (mode == "visit" || mode == "pveVisit")
             {
                 if (!GameAttacker.CanStart
                     || SessionClientController.Data.AttackUsModule != null
-                    || SessionClientController.Data.VisitHostResponding)
+                    || SessionClientController.Data.VisitHostResponding
+                    || SessionClientController.Data.VisitModule != null)
+                {
+                    GameUtils.ShowDialodOKCancel(
+                        "OCity_Caravan_GoTrade2".Translate().ToString(),
+                        "Visit session is already active",
+                        () => { },
+                        null);
+                    return;
+                }
+
+                var baseOnline = сaravanOnline as BaseOnline;
+                if (baseOnline == null)
+                {
+                    GameUtils.ShowDialodOKCancel(
+                        "OCity_Caravan_GoTrade2".Translate().ToString(),
+                        "Visit is available only for player bases",
+                        () => { },
+                        null);
+                    return;
+                }
+
+                if (!GameAttacker.Create() || GameAttacker.Get == null)
+                {
+                    GameUtils.ShowDialodOKCancel(
+                        "OCity_Caravan_GoTrade2".Translate().ToString(),
+                        "Visit session initialization failed",
+                        () => { },
+                        null);
+                    return;
+                }
+
+                GameAttacker.Get.Start(caravan, baseOnline, true);
+            }
+            else if (mode == "attack")
+            {
+                if (!GameAttacker.CanStart
+                    || SessionClientController.Data.AttackUsModule != null
+                    || SessionClientController.Data.VisitHostResponding
+                    || SessionClientController.Data.VisitModule != null)
                 {
                     GameUtils.ShowDialodOKCancel(
                         "OCity_Caravan_GoTrade2".Translate().ToString(),

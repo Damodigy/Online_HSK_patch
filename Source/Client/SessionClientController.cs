@@ -751,7 +751,7 @@ namespace RimWorldOnlineCity
         private static void AcceptIncomingVisitRequest()
         {
             if (Data == null) return;
-            if (!GameAttackHost.AttackMessage())
+            if (Data.VisitModule != null || !GameAttackHost.AttackMessage())
             {
                 Data.VisitHostResponding = false;
                 return;

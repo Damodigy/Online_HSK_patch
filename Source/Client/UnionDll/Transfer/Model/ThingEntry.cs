@@ -29,7 +29,11 @@ namespace Model
         /// <summary>
         /// Пленник, передается пират без наркоза
         /// </summary>
-        Enemy
+        Enemy,
+        /// <summary>
+        /// Нейтральная пешка (не игрок и не враг)
+        /// </summary>
+        Neutral
     }
     public enum PawnIdeo
     {
@@ -204,6 +208,11 @@ namespace Model
         {
             if (thing.def.CanHaveFaction)
             {
+                if (Affiliation == PawnAffiliation.Neutral)
+                {
+                    thing.SetFaction(ResolveNeutralFaction());
+                    return;
+                }
                 if (isColonist)
                 {
                     thing.SetFaction(Faction.OfPlayer);
@@ -213,6 +222,25 @@ namespace Model
                     thing.SetFaction(Find.FactionManager.AllFactions.FirstOrDefault(f => f.def.defName == "Pirate"));
                 }
             }
+        }
+
+        private static Faction ResolveNeutralFaction()
+        {
+            var player = Faction.OfPlayer;
+            var faction = Find.FactionManager.AllFactions
+                .FirstOrDefault(f =>
+                    f != null
+                    && !f.IsPlayer
+                    && f.def != null
+                    && !f.def.hidden
+                    && !f.HostileTo(player));
+            if (faction != null) return faction;
+
+            faction = Find.FactionManager.FirstFactionOfDef(FactionDefOf.OutlanderCivil)
+                ?? Find.FactionManager.FirstFactionOfDef(FactionDefOf.TribeCivil);
+            if (faction != null) return faction;
+
+            return Find.FactionManager.AllFactions.FirstOrDefault(f => f != null && !f.IsPlayer) ?? player;
         }
 
         public string PrepareID(Func<int> ID)

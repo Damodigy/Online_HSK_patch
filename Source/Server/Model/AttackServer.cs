@@ -65,6 +65,7 @@ namespace ServerOnlineCity.Model
         public bool VictoryHostToHost { get; set; }
         public bool TerribleFatalError { get; set; }
         public long AttackUpdateTick { get; set; }
+        public bool HostEnteredState5 { get; set; }
         public string VisitCancelReason { get; set; }
 
         private object SyncObj = new Object();
@@ -111,6 +112,7 @@ namespace ServerOnlineCity.Model
 
             CreateTime = DateTime.UtcNow;
             AttackUpdateTick = 0;
+            HostEnteredState5 = false;
 
             if (!TestMode)
             {
@@ -191,6 +193,7 @@ namespace ServerOnlineCity.Model
 
                 if (fromClient.State == 5)
                 {
+                    HostEnteredState5 = true;
                     State = 5;
                     return new AttackHostFromSrv()
                     {
@@ -391,8 +394,19 @@ namespace ServerOnlineCity.Model
                         TestMode = TestMode,
                     };
                 }
-                if (fromClient.State == 3 && State >= 3)
+                if (fromClient.State == 3)
                 {
+                    // Initiator polls host snapshot readiness. While host is still preparing
+                    // map packet (state 2), this must be treated as "wait", not a hard error.
+                    if (State < 3)
+                    {
+                        return new AttackInitiatorFromSrv()
+                        {
+                            State = State,
+                            TestMode = TestMode,
+                        };
+                    }
+
                     return new AttackInitiatorFromSrv()
                     {
                         State = State,
@@ -406,6 +420,20 @@ namespace ServerOnlineCity.Model
 
                 if (fromClient.State == 10 && State < 10)
                 {
+                    if (TestMode && !HostEnteredState5)
+                    {
+                        var reason = "Visit protocol mismatch: host is in snapshot mode. Please update client.";
+                        VisitCancelReason = reason;
+                        State = VisitCleanupState;
+                        Finish();
+                        return new AttackInitiatorFromSrv()
+                        {
+                            State = VisitCleanupState,
+                            TestMode = true,
+                            ErrorText = reason
+                        };
+                    }
+
                     return new AttackInitiatorFromSrv()
                     {
                         State = State,

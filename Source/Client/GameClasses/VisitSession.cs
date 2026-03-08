@@ -19,9 +19,19 @@ namespace RimWorldOnlineCity
         private const int CleanupState = 90;
         private const int WaitHostReadySeconds = 60;
         private const int WaitMapSnapshotSeconds = 180;
+        private const int VisitLiveSyncDelayMs = 1200;
+        private const int HostLiveStreamDelayMs = 1200;
+        private const int MaxSyncErrorsBeforeStop = 8;
+
+        private static object hostLiveStreamTimerObj;
+        private static long hostLiveStreamPlaceServerId;
+        private static bool hostLiveStreamInTick;
+        private static int hostLiveStreamErrors;
 
         public static bool CanStart => SessionClientController.Data != null
             && SessionClientController.Data.VisitModule == null
+            && SessionClientController.Data.AttackModule == null
+            && SessionClientController.Data.AttackUsModule == null
             && !SessionClientController.Data.VisitHostResponding;
 
         public static VisitSession Get => SessionClientController.Data?.VisitModule;
@@ -56,10 +66,15 @@ namespace RimWorldOnlineCity
         public static void TryHandleIncomingHostRequest(SessionClient connect)
         {
             if (connect == null || SessionClientController.Data == null) return;
-            if (SessionClientController.Data.VisitHostResponding) return;
             if (SessionClientController.Data.VisitModule != null) return;
+            if (SessionClientController.Data.AttackModule != null || SessionClientController.Data.AttackUsModule != null) return;
 
-            SessionClientController.Data.VisitHostResponding = true;
+            var releaseRespondingFlag = false;
+            if (!SessionClientController.Data.VisitHostResponding)
+            {
+                SessionClientController.Data.VisitHostResponding = true;
+                releaseRespondingFlag = true;
+            }
             try
             {
                 HandleIncomingHostRequestInternal(connect);
@@ -70,7 +85,7 @@ namespace RimWorldOnlineCity
             }
             finally
             {
-                if (SessionClientController.Data != null)
+                if (releaseRespondingFlag && SessionClientController.Data != null)
                 {
                     SessionClientController.Data.VisitHostResponding = false;
                 }
@@ -84,11 +99,17 @@ namespace RimWorldOnlineCity
         public DateTime StartUtc { get; private set; }
 
         private bool cleared;
+        private bool handshakeStarted;
+        private bool cleanupRequested;
         private bool backgroundSaveGameOffBefore;
         private object watchTimerObj;
+        private object liveSyncTimerObj;
+        private bool liveSyncInTick;
+        private int liveSyncErrors;
         private Map visitMap;
         private MapParent visitMapParent;
         private List<ThingEntry> visitorPawns;
+        private readonly Dictionary<int, Pawn> hostSnapshotPawns = new Dictionary<int, Pawn>();
 
         private bool StartInternal(Caravan caravan, CaravanOnline target, string mode)
         {
@@ -133,6 +154,7 @@ namespace RimWorldOnlineCity
                 try
                 {
                     connect.ErrorMessage = null;
+                    handshakeStarted = true;
                     var startResponse = connect.AttackOnlineInitiator(new AttackInitiatorToSrv()
                     {
                         State = 0,
@@ -187,7 +209,6 @@ namespace RimWorldOnlineCity
                 }
                 finally
                 {
-                    TrySendCleanup(connect);
                     SessionClientController.Data.DontCheckTimerFail = false;
                 }
             });
@@ -255,6 +276,107 @@ namespace RimWorldOnlineCity
             }
         }
 
+        private static void StartHostLiveStream(long hostPlaceServerId)
+        {
+            if (hostPlaceServerId <= 0 || SessionClientController.Timers == null) return;
+
+            hostLiveStreamPlaceServerId = hostPlaceServerId;
+            hostLiveStreamErrors = 0;
+
+            if (hostLiveStreamTimerObj != null) return;
+
+            hostLiveStreamTimerObj = SessionClientController.Timers.Add(HostLiveStreamDelayMs, HostLiveStreamTick);
+            Loger.Log("VisitSession host live stream started.");
+        }
+
+        private static void StopHostLiveStream()
+        {
+            if (hostLiveStreamTimerObj != null && SessionClientController.Timers != null)
+            {
+                SessionClientController.Timers.Remove(hostLiveStreamTimerObj);
+            }
+
+            hostLiveStreamTimerObj = null;
+            hostLiveStreamPlaceServerId = 0;
+            hostLiveStreamErrors = 0;
+            hostLiveStreamInTick = false;
+        }
+
+        private static void HostLiveStreamTick()
+        {
+            if (hostLiveStreamInTick) return;
+            if (hostLiveStreamPlaceServerId <= 0)
+            {
+                StopHostLiveStream();
+                return;
+            }
+
+            hostLiveStreamInTick = true;
+            try
+            {
+                SessionClientController.Command((connect) =>
+                {
+                    try
+                    {
+                        AttackHostToSrv mapPacket = null;
+                        if (!ModBaseData.RunMainThreadSync(() =>
+                        {
+                            mapPacket = BuildHostMapSnapshotPacket(
+                                hostLiveStreamPlaceServerId,
+                                includeTerrain: false,
+                                includeNonPawnThings: false,
+                                includePawns: true);
+                        }, 120))
+                        {
+                            hostLiveStreamErrors++;
+                            return;
+                        }
+
+                        if (mapPacket == null)
+                        {
+                            hostLiveStreamErrors++;
+                            return;
+                        }
+
+                        connect.ErrorMessage = null;
+                        var push = connect.AttackOnlineHost(mapPacket);
+                        if (!CheckHostResponse(connect, push, out string err))
+                        {
+                            hostLiveStreamErrors++;
+                            if (!string.IsNullOrEmpty(err)
+                                && err.IndexOf("Unexpected request", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                StopHostLiveStream();
+                            }
+                            return;
+                        }
+
+                        if (push.State == CleanupState || push.State < 4 || push.State > 5)
+                        {
+                            StopHostLiveStream();
+                            return;
+                        }
+
+                        hostLiveStreamErrors = 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        hostLiveStreamErrors++;
+                        Loger.Log("VisitSession host live stream tick failed: " + ex.Message, Loger.LogLevel.WARNING);
+                    }
+                });
+            }
+            finally
+            {
+                hostLiveStreamInTick = false;
+            }
+
+            if (hostLiveStreamErrors >= MaxSyncErrorsBeforeStop)
+            {
+                StopHostLiveStream();
+            }
+        }
+
         private static void HandleIncomingHostRequestInternal(SessionClient connect)
         {
             connect.ErrorMessage = null;
@@ -287,9 +409,15 @@ namespace RimWorldOnlineCity
                 Loger.Log("VisitSession host map upload failed: " + err, Loger.LogLevel.WARNING);
                 return;
             }
+
+            StartHostLiveStream(req.HostPlaceServerId);
         }
 
-        private static AttackHostToSrv BuildHostMapSnapshotPacket(long hostPlaceServerId)
+        private static AttackHostToSrv BuildHostMapSnapshotPacket(
+            long hostPlaceServerId,
+            bool includeTerrain = true,
+            bool includeNonPawnThings = true,
+            bool includePawns = true)
         {
             var hostPlace = UpdateWorldController.GetWOByServerId(hostPlaceServerId) as MapParent;
             var hostMap = hostPlace?.Map;
@@ -307,27 +435,52 @@ namespace RimWorldOnlineCity
 
             CellRect cellRect = CellRect.WholeMap(hostMap);
             cellRect.ClipInsideMap(hostMap);
+            var addedPawns = 0;
+            var addedThings = 0;
 
-            foreach (IntVec3 current in cellRect)
+            if (includeTerrain)
             {
-                var terr = hostMap.terrainGrid.TerrainAt(current);
-                packet.TerrainDefNameCell.Add(new IntVec3S(current));
-                packet.TerrainDefName.Add(terr?.defName ?? "Soil");
+                foreach (IntVec3 current in cellRect)
+                {
+                    var terr = hostMap.terrainGrid.TerrainAt(current);
+                    packet.TerrainDefNameCell.Add(new IntVec3S(current));
+                    packet.TerrainDefName.Add(terr?.defName ?? "Soil");
+                }
             }
 
             foreach (IntVec3 current in cellRect)
             {
                 foreach (Thing thc in hostMap.thingGrid.ThingsAt(current).ToList<Thing>())
                 {
-                    if (thc == null || thc is Pawn) continue;
                     if (thc.Position != current) continue;
-                    if (thc.def.category == ThingCategory.Plant && !thc.def.plant.IsTree) continue;
+                    if (thc is Pawn pawn)
+                    {
+                        if (!includePawns) continue;
+                        if (!ShouldIncludeSnapshotPawn(pawn)) continue;
+
+                        try
+                        {
+                            var tt = ThingTrade.CreateTrade(pawn, 1, true);
+                            tt.Affiliation = PawnAffiliation.Neutral;
+                            packet.ThingCell.Add(new IntVec3S(current));
+                            packet.Thing.Add(tt);
+                            addedPawns++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Loger.Log("VisitSession skip pawn in snapshot: " + ex.Message, Loger.LogLevel.WARNING);
+                        }
+                        continue;
+                    }
+                    if (!includeNonPawnThings) continue;
+                    if (!ShouldIncludeSnapshotThing(thc)) continue;
 
                     try
                     {
                         var tt = ThingTrade.CreateTrade(thc, thc.stackCount, false);
                         packet.ThingCell.Add(new IntVec3S(current));
                         packet.Thing.Add(tt);
+                        addedThings++;
                     }
                     catch (Exception ex)
                     {
@@ -336,7 +489,102 @@ namespace RimWorldOnlineCity
                 }
             }
 
+            if (MainHelper.DebugMode)
+            {
+                Loger.Log($"VisitSession host snapshot prepared. pawns={addedPawns} things={addedThings}");
+            }
             return packet;
+        }
+
+        private static bool ShouldIncludeSnapshotPawn(Pawn pawn)
+        {
+            if (pawn == null || pawn.def == null) return false;
+            if (pawn.DestroyedOrNull() || pawn.Dead) return false;
+            if (!pawn.Spawned) return false;
+            return pawn.Faction == Faction.OfPlayer;
+        }
+
+        private static bool ShouldIncludeSnapshotThing(Thing thing)
+        {
+            if (thing == null || thing.def == null) return false;
+            if (thing is Pawn || thing is Corpse || thing is MinifiedThing) return false;
+            if (thing is Blueprint || thing is Frame) return false;
+            if (thing.def.category == ThingCategory.Pawn) return false;
+            if (thing.def.category == ThingCategory.Mote) return false;
+            if (thing.def.IsFilth) return false;
+            if (thing.def.category == ThingCategory.Plant && (thing.def.plant == null || !thing.def.plant.IsTree)) return false;
+            return true;
+        }
+
+        private static bool ShouldSpawnSnapshotThing(ThingTrade trade, Map map, IntVec3 cell)
+        {
+            if (trade == null || map == null) return false;
+            if (!cell.InBounds(map)) return false;
+            if (string.IsNullOrEmpty(trade.DefName)) return false;
+
+            var def = DefDatabase<ThingDef>.GetNamed(trade.DefName, false);
+            if (def == null) return false;
+            if (def.category == ThingCategory.Pawn)
+            {
+                return !string.IsNullOrEmpty(trade.Data);
+            }
+            if (def.category == ThingCategory.Mote) return false;
+            if (def.IsFilth) return false;
+            if (def.category == ThingCategory.Plant && (def.plant == null || !def.plant.IsTree)) return false;
+            if (trade.DefName == "Corpse" || trade.DefName == "MinifiedThing") return false;
+            return true;
+        }
+
+        private static bool ShouldKeepSpawnedSnapshotThing(Thing thing)
+        {
+            if (thing == null || thing.def == null) return false;
+            if (thing is Corpse || thing is MinifiedThing) return false;
+            if (thing is Blueprint || thing is Frame) return false;
+            if (thing.def.category == ThingCategory.Mote) return false;
+            if (thing.def.IsFilth) return false;
+            if (thing.def.category == ThingCategory.Plant && (thing.def.plant == null || !thing.def.plant.IsTree)) return false;
+            if (thing is Pawn pawn && (pawn.DestroyedOrNull() || pawn.Dead)) return false;
+            return true;
+        }
+
+        private static bool IsSnapshotPawnTrade(ThingTrade trade)
+        {
+            if (trade == null || string.IsNullOrEmpty(trade.DefName)) return false;
+            if (string.IsNullOrEmpty(trade.Data)) return false;
+            var def = DefDatabase<ThingDef>.GetNamed(trade.DefName, false);
+            return def != null && def.category == ThingCategory.Pawn;
+        }
+
+        private static IntVec3 ResolveSnapshotPawnCell(Map map, IntVec3 desiredCell)
+        {
+            if (map == null) return IntVec3.Invalid;
+
+            if (desiredCell.InBounds(map) && desiredCell.Standable(map)) return desiredCell;
+
+            if (desiredCell.InBounds(map))
+            {
+                return CellFinder.RandomClosewalkCellNear(desiredCell, map, 2);
+            }
+
+            return FindVisitEntryCell(map);
+        }
+
+        private static IntVec3 FindVisitEntryCell(Map map)
+        {
+            if (map == null) return IntVec3.Invalid;
+
+            if (CellFinder.TryFindRandomEdgeCellWith(x => x.Standable(map), map, CellFinder.EdgeRoadChance_Neutral, out var edge))
+            {
+                return CellFinder.RandomClosewalkCellNear(edge, map, 5);
+            }
+
+            return CellFinder.RandomCell(map);
+        }
+
+        private static Func<Thing, IntVec3> CreateVisitSpawnCellProvider(Map map)
+        {
+            var entryCell = FindVisitEntryCell(map);
+            return _ => CellFinder.RandomSpawnCellForPawnNear(entryCell, map, 4);
         }
 
         private static string Validate(Caravan caravan, CaravanOnline target)
@@ -383,7 +631,7 @@ namespace RimWorldOnlineCity
                         TileFinder_IsValidTileForNewSettlement_Patch.Off = true;
                         Rand.Seed = Gen.HashCombineInt(Find.World.info.Seed, tile);
 
-                        var mapParent = (MapParent)WorldObjectMaker.MakeWorldObject(WorldObjectDefOf.Ambush);
+                        var mapParent = (MapParent)WorldObjectMaker.MakeWorldObject(WorldObjectDefOf.Settlement);
                         mapParent.Tile = tile;
                         Find.WorldObjects.Add(mapParent);
                         mapParent.SetFaction(Find.FactionManager.OfPlayer);
@@ -396,7 +644,6 @@ namespace RimWorldOnlineCity
                                     || gs.defName == "Terrain"
                                     || gs.defName == "CavesTerrain"
                                     || gs.defName == "FindPlayerStartSpot"
-                                    || gs.defName == "ScenParts"
                                     || gs.defName == "Fog")
                                 .ToList()
                         };
@@ -410,6 +657,18 @@ namespace RimWorldOnlineCity
                                 CellRect cellRect = CellRect.WholeMap(map);
                                 cellRect.ClipInsideMap(map);
                                 GenDebug.ClearArea(cellRect, map);
+                                // Defensive cleanup: some modded generators can still spawn pawns.
+                                foreach (var pawn in map.mapPawns.AllPawnsSpawned.ToList())
+                                {
+                                    try
+                                    {
+                                        pawn.Destroy();
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Loger.Log("VisitSession cleanup generated pawn failed: " + ex.Message, Loger.LogLevel.WARNING);
+                                    }
+                                }
 
                                 var terrCount = Math.Min(snapshot.TerrainDefNameCell.Count, snapshot.TerrainDefName.Count);
                                 for (int i = 0; i < terrCount; i++)
@@ -434,8 +693,12 @@ namespace RimWorldOnlineCity
                                     {
                                         var current = snapshot.ThingCell[i].Get();
                                         var tt = snapshot.Thing[i];
+                                        if (!ShouldSpawnSnapshotThing(tt, map, current)) continue;
+
                                         var th = tt.CreateThing();
+                                        if (!ShouldKeepSpawnedSnapshotThing(th)) continue;
                                         GenSpawn.Spawn(th, current, map, new Rot4(tt.Rotation), WipeMode.Vanish);
+                                        RegisterHostSnapshotPawn(tt, th);
                                     }
                                     catch (Exception ex)
                                     {
@@ -443,17 +706,32 @@ namespace RimWorldOnlineCity
                                     }
                                 }
 
+                                var jumpCell = map.Center;
                                 if (visitorPawns != null && visitorPawns.Count > 0)
                                 {
-                                    var nextCell = GameUtils.GetAttackCells(map);
-                                    GameUtils.SpawnList(map, visitorPawns, false, (p) => false, null, (p) => nextCell());
+                                    jumpCell = GameUtils.SpawnList(
+                                        map,
+                                        visitorPawns,
+                                        false,
+                                        _ => false,
+                                        null,
+                                        CreateVisitSpawnCellProvider(map));
+                                }
+                                else
+                                {
+                                    jumpCell = FindVisitEntryCell(map);
                                 }
 
                                 visitMap = map;
                                 visitMapParent = mapParent;
                                 StartWatchTimer();
+                                StartLiveSyncTimer();
 
-                                CameraJumper.TryJump(map.Center, map);
+                                if (!jumpCell.IsValid || !jumpCell.InBounds(map))
+                                {
+                                    jumpCell = map.Center;
+                                }
+                                CameraJumper.TryJump(jumpCell, map);
                                 Messages.Message("Visit snapshot loaded. Return to world map to finish visit.", MessageTypeDefOf.NeutralEvent);
                             }
                             catch (Exception ex)
@@ -480,6 +758,163 @@ namespace RimWorldOnlineCity
                     Clear();
                 }
             }, "GeneratingMapForNewEncounter", false, null);
+        }
+
+        private void RegisterHostSnapshotPawn(ThingTrade trade, Thing thing)
+        {
+            if (!(thing is Pawn pawn)) return;
+            if (trade == null || trade.OriginalID <= 0) return;
+            hostSnapshotPawns[trade.OriginalID] = pawn;
+        }
+
+        private void StartLiveSyncTimer()
+        {
+            if (SessionClientController.Timers == null || liveSyncTimerObj != null) return;
+            liveSyncErrors = 0;
+            liveSyncTimerObj = SessionClientController.Timers.Add(VisitLiveSyncDelayMs, LiveSyncTick);
+        }
+
+        private void LiveSyncTick()
+        {
+            if (cleared || visitMap == null || visitMapParent == null) return;
+            if (Find.CurrentMap != visitMap) return;
+            if (liveSyncInTick) return;
+
+            liveSyncInTick = true;
+            try
+            {
+                SessionClientController.Command((connect) =>
+                {
+                    try
+                    {
+                        connect.ErrorMessage = null;
+                        var mapResponse = connect.AttackOnlineInitiator(new AttackInitiatorToSrv() { State = 3 });
+
+                        if (mapResponse != null && mapResponse.State == CleanupState)
+                        {
+                            cleanupRequested = true;
+                            Clear();
+                            return;
+                        }
+
+                        if (!CheckInitiatorResponse(connect, mapResponse, out string err))
+                        {
+                            liveSyncErrors++;
+                            if (!string.IsNullOrEmpty(err)
+                                && err.IndexOf("Unexpected request", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                cleanupRequested = true;
+                                Clear();
+                            }
+                            return;
+                        }
+
+                        if (mapResponse == null || mapResponse.State < 4
+                            || mapResponse.Thing == null
+                            || mapResponse.ThingCell == null)
+                        {
+                            liveSyncErrors++;
+                            return;
+                        }
+
+                        liveSyncErrors = 0;
+                        ModBaseData.RunMainThreadSync(() =>
+                        {
+                            ApplyLiveSnapshot(mapResponse);
+                        }, 90, true);
+                    }
+                    catch (Exception ex)
+                    {
+                        liveSyncErrors++;
+                        Loger.Log("VisitSession live sync tick failed: " + ex.Message, Loger.LogLevel.WARNING);
+                    }
+                });
+            }
+            finally
+            {
+                liveSyncInTick = false;
+            }
+
+            if (liveSyncErrors >= MaxSyncErrorsBeforeStop)
+            {
+                Clear();
+            }
+        }
+
+        private void ApplyLiveSnapshot(AttackInitiatorFromSrv snapshot)
+        {
+            if (visitMap == null || snapshot == null || snapshot.Thing == null || snapshot.ThingCell == null) return;
+
+            var snapshotPawns = new Dictionary<int, ThingTrade>();
+            var snapshotPawnCells = new Dictionary<int, IntVec3>();
+            var snapshotCount = Math.Min(snapshot.Thing.Count, snapshot.ThingCell.Count);
+            for (int i = 0; i < snapshotCount; i++)
+            {
+                var trade = snapshot.Thing[i];
+                if (!IsSnapshotPawnTrade(trade)) continue;
+                if (trade.OriginalID <= 0) continue;
+
+                var cell = snapshot.ThingCell[i].Get();
+                snapshotPawns[trade.OriginalID] = trade;
+                snapshotPawnCells[trade.OriginalID] = cell;
+            }
+
+            foreach (var knownId in hostSnapshotPawns.Keys.ToList())
+            {
+                if (!hostSnapshotPawns.TryGetValue(knownId, out var pawn) || pawn.DestroyedOrNull())
+                {
+                    hostSnapshotPawns.Remove(knownId);
+                    continue;
+                }
+
+                if (snapshotPawns.ContainsKey(knownId)) continue;
+
+                try
+                {
+                    pawn.Destroy(DestroyMode.Vanish);
+                }
+                catch
+                {
+                    // ignore
+                }
+                hostSnapshotPawns.Remove(knownId);
+            }
+
+            foreach (var pair in snapshotPawns)
+            {
+                var hostPawnId = pair.Key;
+                var trade = pair.Value;
+                var targetCell = ResolveSnapshotPawnCell(visitMap, snapshotPawnCells[hostPawnId]);
+
+                if (hostSnapshotPawns.TryGetValue(hostPawnId, out var existingPawn)
+                    && !existingPawn.DestroyedOrNull()
+                    && existingPawn.Spawned)
+                {
+                    if (targetCell.IsValid && existingPawn.Position != targetCell)
+                    {
+                        existingPawn.Position = targetCell;
+                        existingPawn.Notify_Teleported(endCurrentJob: true, resetTweenedPos: false);
+                    }
+                    continue;
+                }
+
+                try
+                {
+                    var thing = trade.CreateThing();
+                    if (!(thing is Pawn newPawn))
+                    {
+                        thing?.Destroy(DestroyMode.Vanish);
+                        continue;
+                    }
+
+                    GenSpawn.Spawn(newPawn, targetCell, visitMap, new Rot4(trade.Rotation), WipeMode.Vanish);
+                    hostSnapshotPawns[hostPawnId] = newPawn;
+                }
+                catch (Exception ex)
+                {
+                    Loger.Log("VisitSession live sync spawn pawn failed: " + ex.Message, Loger.LogLevel.WARNING);
+                }
+            }
         }
 
         private void StartWatchTimer()
@@ -527,6 +962,22 @@ namespace RimWorldOnlineCity
             {
                 visitMap = null;
                 visitMapParent = null;
+                hostSnapshotPawns.Clear();
+            }
+        }
+
+        private void SendCleanupRequest()
+        {
+            if (!handshakeStarted || cleanupRequested) return;
+            cleanupRequested = true;
+
+            try
+            {
+                SessionClientController.Command((connect) => TrySendCleanup(connect));
+            }
+            catch (Exception ex)
+            {
+                Loger.Log("VisitSession send cleanup failed: " + ex.Message, Loger.LogLevel.WARNING);
             }
         }
 
@@ -540,6 +991,13 @@ namespace RimWorldOnlineCity
                 SessionClientController.Timers.Remove(watchTimerObj);
                 watchTimerObj = null;
             }
+            if (liveSyncTimerObj != null && SessionClientController.Timers != null)
+            {
+                SessionClientController.Timers.Remove(liveSyncTimerObj);
+                liveSyncTimerObj = null;
+            }
+
+            SendCleanupRequest();
 
             CleanupVisitMap();
 

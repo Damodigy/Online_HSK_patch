@@ -65,9 +65,13 @@ namespace RimWorldOnlineCity
                         .Select(o =>
                         {
                             var oo = GetWorldObjectEntry(o, gameProgress, cacheColonists);
-                            if (o is MapParent) tmpMap.Add(oo, ((MapParent)o).Map);
+                            if (o is MapParent mapParent && oo != null && !tmpMap.ContainsKey(oo))
+                            {
+                                tmpMap.Add(oo, mapParent.Map);
+                            }
                             return oo;
                         })
+                        .Where(oo => oo != null)
                         .ToList();
 
                 //обновляем информацию по своим поселениям
@@ -93,9 +97,19 @@ namespace RimWorldOnlineCity
                 }
 
                 //устанавливаем доп стоимость в карты
-                MainTabWindow_DoStatisticsPage_Patch.PatchColonyWealth = WObjects
-                    .Where(o => o.Type == WorldObjectEntryType.Base)
-                    .ToDictionary(o => tmpMap[o], o => (o.MarketValueBalance + o.MarketValueStorage) * (float)SessionClientController.Data.GeneralSettings.ExchengePrecentWealthForIncident / 1000f);
+                var patchColonyWealth = new Dictionary<Map, float>();
+                var baseObjects = WObjects.Where(o => o.Type == WorldObjectEntryType.Base).ToList();
+                for (int i = 0; i < baseObjects.Count; i++)
+                {
+                    var wo = baseObjects[i];
+                    if (wo == null) continue;
+                    if (!tmpMap.TryGetValue(wo, out var map) || map == null) continue;
+
+                    patchColonyWealth[map] = (wo.MarketValueBalance + wo.MarketValueStorage)
+                        * (float)SessionClientController.Data.GeneralSettings.ExchengePrecentWealthForIncident
+                        / 1000f;
+                }
+                MainTabWindow_DoStatisticsPage_Patch.PatchColonyWealth = patchColonyWealth;
 
                 //Loger.Log("PrepareInMainThread " + ModBaseData.GlobalData.ActionNumReady + " debugtime " + (DateTime.UtcNow - debugtime).TotalMilliseconds); 
             }
@@ -1042,6 +1056,7 @@ namespace RimWorldOnlineCity
                 {
                     RefreshOnlineDescriptorsSnapshot(fromServ.WObjectOnlineList);
                     ApplyNonPlayerWorldObjectSnapshot(fromServ.WObjectOnlineList);
+                    EnsureNonPlayerSettlementVisuals();
                     LastWorldObjectOnline = fromServ.WObjectOnlineList
                         .Where(w => w != null)
                         .ToList();
@@ -1076,33 +1091,26 @@ namespace RimWorldOnlineCity
                     MergeOnlineDescriptors(fromServ.WObjectOnlineToAdd);
                     for (var i = 0; i < fromServ.WObjectOnlineToAdd.Count; i++)
                     {
-                        if (!Find.WorldObjects.AnySettlementAt(fromServ.WObjectOnlineToAdd[i].Tile))
+                        var descriptor = fromServ.WObjectOnlineToAdd[i];
+                        if (descriptor == null) continue;
+
+                        if (!Find.WorldObjects.AnySettlementAt(descriptor.Tile))
                         {
-                            Faction faction = Find.FactionManager.AllFactionsListForReading.FirstOrDefault(fm => 
-                            fm.def.LabelCap == fromServ.WObjectOnlineToAdd[i].FactionGroup &&
-                            fm.loadID == fromServ.WObjectOnlineToAdd[i].loadID);
-                            if (faction != null)
+                            if (!TryCreateOnlineSettlement(descriptor))
                             {
-                                var npcBase = (Settlement)WorldObjectMaker.MakeWorldObject(WorldObjectDefOf.Settlement);
-                                npcBase.SetFaction(faction);
-                                npcBase.Tile = fromServ.WObjectOnlineToAdd[i].Tile;
-                                npcBase.Name = fromServ.WObjectOnlineToAdd[i].Name;
-                                Find.WorldObjects.Add(npcBase);
-                                //LastWorldObjectOnline.Add(fromServ.OnlineWObjectToAdd[i]);
-                            }
-                            else
-                            {
-                                Log.Warning("Faction is missing or not found : " + fromServ.WObjectOnlineToAdd[i].FactionGroup);
-                                Loger.Log("Skipping ToAdd Settlement : " + fromServ.WObjectOnlineToAdd[i].Name);
+                                Log.Warning("Faction is missing or not found : " + descriptor.FactionGroup + " / " + descriptor.FactionDef);
+                                Loger.Log("Skipping ToAdd Settlement : " + descriptor.Name);
                             }
 
                         }
                         else
                         {
-                            Loger.Log("Can't Add Settlement. Tile is already occupied " + Find.WorldObjects.SettlementAt(fromServ.WObjectOnlineToAdd[i].Tile), Loger.LogLevel.WARNING);
+                            Loger.Log("Can't Add Settlement. Tile is already occupied " + Find.WorldObjects.SettlementAt(descriptor.Tile), Loger.LogLevel.WARNING);
                         }
                     }
                 }
+
+                EnsureNonPlayerSettlementVisuals();
             }
             catch (Exception e)
             {
@@ -1203,6 +1211,52 @@ namespace RimWorldOnlineCity
             return true;
         }
 
+        private static void EnsureNonPlayerSettlementVisuals()
+        {
+            var settlements = Find.WorldObjects.AllWorldObjects
+                .OfType<Settlement>()
+                .Where(s => s != null && !(s.Faction?.IsPlayer ?? false))
+                .ToList();
+            if (settlements.Count == 0) return;
+
+            var worldChanged = false;
+            for (int i = 0; i < settlements.Count; i++)
+            {
+                var settlement = settlements[i];
+                if (settlement == null) continue;
+                if (IsFactionSuitableForStorySettlement(settlement.Faction, false)) continue;
+
+                var descriptor = GetOnlineWorldDescriptorByTile(settlement.Tile)
+                    ?? new WorldObjectOnline()
+                    {
+                        Tile = settlement.Tile,
+                        Name = settlement.Name,
+                        FactionGroup = settlement.Faction?.def?.LabelCap,
+                        FactionDef = settlement.Faction?.def?.defName,
+                        loadID = settlement.Faction?.loadID ?? 0
+                    };
+                var replacementFaction = ResolveOnlineWorldObjectFaction(descriptor);
+
+                if (replacementFaction == null)
+                {
+                    Find.WorldObjects.Remove(settlement);
+                    worldChanged = true;
+                    continue;
+                }
+
+                if (settlement.Faction != replacementFaction)
+                {
+                    settlement.SetFaction(replacementFaction);
+                    worldChanged = true;
+                }
+            }
+
+            if (worldChanged)
+            {
+                Find.World?.WorldUpdate();
+            }
+        }
+
         private static void ApplyOnlineSettlementData(Settlement settlement, WorldObjectOnline descriptor)
         {
             if (settlement == null || descriptor == null) return;
@@ -1239,6 +1293,9 @@ namespace RimWorldOnlineCity
             var suitableAllPool = factions
                 .Where(f => IsFactionSuitableForStorySettlement(f, requiresHostile))
                 .ToList();
+            var suitablePool = suitablePreferredPool.Count > 0
+                ? suitablePreferredPool
+                : suitableAllPool;
 
             Faction faction = null;
             if (descriptor.loadID > 0)
@@ -1259,19 +1316,24 @@ namespace RimWorldOnlineCity
                     || string.Equals(f.Name, label, StringComparison.OrdinalIgnoreCase));
             }
 
-            // Если сервер явно задал фракцию и мы ее нашли — не переопределяем.
-            if (faction != null)
+            // Явно заданная сервером фракция может не иметь иконки поселения.
+            // В таком случае выбираем безопасный fallback.
+            if (!IsFactionSuitableForStorySettlement(faction, requiresHostile))
             {
-                return faction;
+                if (faction != null)
+                {
+                    Loger.Log("ResolveOnlineWorldObjectFaction visual fallback "
+                        + $"{descriptor.FactionGroup}/{descriptor.FactionDef} -> {faction?.def?.defName}"
+                        , Loger.LogLevel.WARNING);
+                }
+                faction = null;
             }
 
             if (descriptor.ServerGenerated)
             {
                 if (!IsFactionSuitableForStorySettlement(faction, requiresHostile))
                 {
-                    var fallbackPool = suitablePreferredPool.Count > 0
-                        ? suitablePreferredPool
-                        : suitableAllPool;
+                    var fallbackPool = suitablePool;
                     if (fallbackPool.Count > 0)
                     {
                         faction = PickDeterministicFaction(fallbackPool, descriptor);
@@ -1299,12 +1361,18 @@ namespace RimWorldOnlineCity
             if (faction == null)
             {
                 var fallbackPool = descriptor.ServerGenerated
-                    ? (suitablePreferredPool.Count > 0 ? suitablePreferredPool : suitableAllPool)
-                    : preferredPool;
+                    ? suitablePool
+                    : suitablePool;
                 faction = PickDeterministicFaction(fallbackPool, descriptor);
-                if (faction == null && !descriptor.ServerGenerated)
+                if (faction == null)
                 {
-                    faction = PickDeterministicFaction(factions, descriptor);
+                    var visualPool = factions
+                        .Where(f => f != null
+                            && !f.IsPlayer
+                            && !string.IsNullOrWhiteSpace(f.def?.settlementTexturePath)
+                            && (!requiresHostile || IsHostileToPlayer(f)))
+                        .ToList();
+                    faction = PickDeterministicFaction(visualPool, descriptor);
                 }
                 if (faction != null)
                 {

@@ -179,7 +179,8 @@ namespace RimWorldOnlineCity
                                 ? "Host not online"
                                 : !(GameAttacker.CanStart
                                     && SessionClientController.Data.AttackUsModule == null
-                                    && !SessionClientController.Data.VisitHostResponding)
+                                    && !SessionClientController.Data.VisitHostResponding
+                                    && SessionClientController.Data.VisitModule == null)
                                     ? "Visit session is already active"
                                 : null;
                     fmo = new FloatMenuOption("OCity_Caravan_GoTrade2".Translate() + ": " + OnlinePlayerLogin + " " + OnlineName
