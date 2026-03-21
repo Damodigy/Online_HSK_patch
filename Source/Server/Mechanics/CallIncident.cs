@@ -1,5 +1,6 @@
-﻿using OCUnion;
+using OCUnion;
 using ServerOnlineCity.Model;
+using ServerOnlineCity.Services;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -44,6 +45,12 @@ namespace ServerOnlineCity.Mechanics
             if (player.Public.LastTick / 3600000 < 2) return "OC_Incidents_CallIncidebts_YearErr1";
 
             if (targetPlayer.Public.LastTick / 3600000 < 2) return "OC_Incidents_CallIncidebts_YearErr2";
+
+            // Перемирие: атаки заблокированы
+            var worldData = Repository.GetData;
+            if (worldData?.ActiveGlobalEvent?.Type == GlobalEventType.Truce
+                && worldData.ActiveGlobalEvent.IsActive(DateTime.UtcNow))
+                return "OC_GlobalEvent_TruceActive";
 
 
             var costAllPlayer = player.AllCostWorldObjects();
@@ -102,7 +109,8 @@ namespace ServerOnlineCity.Mechanics
                 targetPlayer.FunctionMails.Add(fPacket);
             }
 
-            player.AttacksInitiatorCount++;   //не прибавлять положительные инцинденты! 
+            player.AttacksInitiatorCount++;   //не прибавлять положительные инцинденты!
+            player.LoseReputation(5);          // репутация: -5 за атаку
 
             //Добавляем в спец лог
             IncidentLogAppend("NewIncident", packet, "", (int)costAllPlayer, (int)costAllTargetPlayer);

@@ -1,4 +1,4 @@
-﻿using Model;
+using Model;
 using OCUnion;
 using ServerOnlineCity.Common;
 using ServerOnlineCity.Model;
@@ -308,7 +308,7 @@ namespace ServerOnlineCity.Mechanics
 
                 if (need.DefName == MainHelper.CashlessThingDefName)
                 {
-                    if (need.Count * filterRate >= player.CashlessBalance)
+                    if (need.Count * filterRate > player.CashlessBalance)
                     {
                         selectCashless = (int)player.CashlessBalance;
                         countSelected = selectCashless;
@@ -541,7 +541,7 @@ namespace ServerOnlineCity.Mechanics
                     }
                     if (best.SellEnd2.Count > 0)
                     {
-                        msg1 += Environment.NewLine + msg0 + best.SellEnd2.ToStringLabel();
+                        msg2 += Environment.NewLine + msg0 + " " + best.SellEnd2.ToStringLabel();
                         SendToStorage(o1.Tile, playerServer2, best.SellEnd2);
                     }
 
@@ -580,6 +580,10 @@ namespace ServerOnlineCity.Mechanics
                         , ModelMailMessadge.MessadgeTypes.GoldenLetter
                         , best.Order1.Tile
                         );
+
+                    // Репутация: +2 каждому за успешную сделку
+                    pl1.AddReputation(2);
+                    pl2.AddReputation(2);
                 }
             } while (best != null);
 
@@ -616,7 +620,8 @@ namespace ServerOnlineCity.Mechanics
 
             var msg2 = string.Format("OC_ExchengeOperator_tradeBought0 {0} OC_ExchengeOperator_tradeBought1 {1}" // Вы приобрели по сделке
                 , needRepeat
-                , thingsFromOrder.ToStringLabel());
+                , thingsFromOrder.ToStringLabel())
+                + " OC_ExchengeOperator_AtTile " + order.Tile;
 
             //уменьшаем счетчики сделок
             order.CountReady -= needRepeat;
@@ -645,6 +650,10 @@ namespace ServerOnlineCity.Mechanics
                 , order.Tile
                 );
 
+            // Репутация: +3 продавцу, +1 покупателю
+            orderPlayer.AddReputation(3);
+            player.AddReputation(1);
+
             return true;
         }
 
@@ -656,6 +665,66 @@ namespace ServerOnlineCity.Mechanics
                     .Where(o => o.Owner.Login == player.Public.Login)
                     .SelectMany(o => o.SellThings.Select(x => new Tuple<ThingTrade, int>(x, o.CountReady)))
                 );
+
+        /// <summary>
+        /// Раз в час рассылает топ-5 ордеров по стоимости всем онлайн-игрокам.
+        /// Вызывается из ServerStoryteller.Tick.
+        /// </summary>
+        public static void TryBroadcastHotOrders(BaseContainer data, DateTime now)
+        {
+            if (data == null) return;
+            if ((now - data.HotOrdersLastSentUtc).TotalHours < 1) return;
+
+            var orders = data.Orders;
+            if (orders == null || orders.Count == 0) return;
+
+            // Топ-5 ордеров по суммарной стоимости предлагаемых вещей
+            var top5 = orders
+                .OrderByDescending(o => o.SellThings?.Sum(t => (double)t.GameCost * t.Count) ?? 0)
+                .Take(5)
+                .ToList();
+
+            if (top5.Count == 0) return;
+
+            // Формируем текст письма
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("OC_HotOrders_Header");
+            for (int i = 0; i < top5.Count; i++)
+            {
+                var o = top5[i];
+                var sellLabel = o.SellThings?.ToStringLabel() ?? "?";
+                var buyLabel = o.BuyThings?.ToStringLabel() ?? "?";
+                sb.AppendLine($"{i + 1}. {sellLabel} OC_HotOrders_For {buyLabel} x{o.CountReady} OC_HotOrders_Tile {o.Tile}");
+            }
+            var text = sb.ToString().Trim();
+
+            // Онлайн-игроки (активны за последние 30 минут)
+            var onlinePlayers = data.GetPlayersAll
+                ?.Where(p => p?.Public?.Login != null
+                    && p.Public.Login != "system"
+                    && p.Public.LastSaveTime > now.AddMinutes(-30))
+                .ToList();
+
+            if (onlinePlayers == null || onlinePlayers.Count == 0)
+            {
+                data.HotOrdersLastSentUtc = now;
+                return;
+            }
+
+            foreach (var player in onlinePlayers)
+            {
+                HelperMailMessadge.Send(
+                    data.PlayerSystem
+                    , player
+                    , "OC_HotOrders_Label"
+                    , text
+                    , ModelMailMessadge.MessadgeTypes.Neutral
+                    , 0);
+            }
+
+            data.HotOrdersLastSentUtc = now;
+            Loger.Log($"ExchengeOperator: HotOrders broadcast to {onlinePlayers.Count} players, top={top5.Count}");
+        }
 
         public void DayPassed(PlayerServer player)
         {

@@ -549,13 +549,14 @@ namespace ServerOnlineCity.Services
                 var md = context.Player.Mails.FirstOrDefault(m => m is ModelMailAttackCancel);
                 if (md == null)
                 {
-                    toClient.Mails = context.Player.Mails;
-                    context.Player.MailsConfirmationSave.AddRange(context.Player.Mails.Where(m => m.NeedSaveGame).ToList());
+                    var outgoingMails = NormalizeOutgoingMails(context.Player.Mails, context.Player, data?.PlayerSystem?.Public);
+                    toClient.Mails = outgoingMails;
+                    context.Player.MailsConfirmationSave.AddRange(outgoingMails.Where(m => m.NeedSaveGame).ToList());
                     context.Player.Mails = new List<ModelMail>();
                 }
                 else
                 {
-                    toClient.Mails = new List<ModelMail>() { md };
+                    toClient.Mails = NormalizeOutgoingMails(new List<ModelMail>() { md }, context.Player, data?.PlayerSystem?.Public);
                     context.Player.Mails.Remove(md);
                 }
 
@@ -575,7 +576,10 @@ namespace ServerOnlineCity.Services
                 {
                     foreach (var mail in toClient.Mails)
                     {
-                        Loger.Log($"DownloadMail {mail.GetType().Name} {mail.From.Login}->{mail.To.Login} {mail.ContentString()}");
+                        var fromLogin = mail?.From?.Login ?? "-";
+                        var toLogin = mail?.To?.Login ?? "-";
+                        var content = SafeMailContent(mail);
+                        Loger.Log($"DownloadMail {mail?.GetType().Name ?? "null"} {fromLogin}->{toLogin} {content}");
                     }
                 }
 
@@ -583,6 +587,42 @@ namespace ServerOnlineCity.Services
                 toClient.StorageBalance = context.Player.StorageBalance;
 
                 return toClient;
+            }
+        }
+
+        private static List<ModelMail> NormalizeOutgoingMails(List<ModelMail> mails, PlayerServer player, Player systemPlayer)
+        {
+            if (mails == null || mails.Count == 0) return new List<ModelMail>();
+
+            var normalized = new List<ModelMail>(mails.Count);
+            var playerPublic = player?.Public;
+            var fallbackFrom = systemPlayer ?? playerPublic;
+            foreach (var mail in mails)
+            {
+                if (mail == null) continue;
+                if (mail.To == null || string.IsNullOrWhiteSpace(mail.To.Login))
+                {
+                    mail.To = playerPublic;
+                }
+                if (mail.From == null || string.IsNullOrWhiteSpace(mail.From.Login))
+                {
+                    mail.From = fallbackFrom;
+                }
+                normalized.Add(mail);
+            }
+            return normalized;
+        }
+
+        private static string SafeMailContent(ModelMail mail)
+        {
+            if (mail == null) return "-";
+            try
+            {
+                return mail.ContentString() ?? "-";
+            }
+            catch (Exception ex)
+            {
+                return "<content error: " + ex.GetType().Name + ">";
             }
         }
 

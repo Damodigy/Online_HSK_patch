@@ -1141,10 +1141,11 @@ namespace RimWorldOnlineCity
             GameAttackTrigger_Patch.ForceSpeed = -1f;
         }
 
-        public void Finish()
+        public void Finish(bool victoryAttacker = false)
         {
             Find.TickManager.Pause();
             Clear();
+            _ = victoryAttacker;
 
             GameUtils.ShowDialodOKCancel(
                 "OCity_Caravan_GoTrade2".Translate().ToString() //"OCity_GameAttacker_Settlement_Attacking".Translate(HostLogin)

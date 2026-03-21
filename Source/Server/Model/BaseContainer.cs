@@ -1,4 +1,4 @@
-﻿using Model;
+using Model;
 using OCUnion;
 using System;
 using System.Collections.Concurrent;
@@ -90,6 +90,17 @@ namespace ServerOnlineCity.Model
         public List<int> StorytellerKnownTiles { get; set; }
         public DateTime StorytellerLastRunUtc { get; set; }
 
+        // Merchant Guild
+        public List<GuildOrder> GuildOrders { get; set; }
+        public long MaxGuildOrderId { get; set; }
+
+        // Global Events
+        public GlobalEvent ActiveGlobalEvent { get; set; }
+        public DateTime NextGlobalEventUtc { get; set; }
+
+        // Hot Orders
+        public DateTime HotOrdersLastSentUtc { get; set; }
+
         [NonSerialized]
         public bool EverybodyLogoff;
 
@@ -166,6 +177,10 @@ namespace ServerOnlineCity.Model
             StoryEvents = new List<ServerStoryEvent>();
             StorytellerKnownTiles = new List<int>();
             StorytellerLastRunUtc = DateTime.MinValue;
+            GuildOrders = new List<GuildOrder>();
+            ActiveGlobalEvent = new GlobalEvent();
+            NextGlobalEventUtc = DateTime.UtcNow.AddDays(1);
+            HotOrdersLastSentUtc = DateTime.MinValue;
 
             PostLoad();
         }
@@ -185,6 +200,9 @@ namespace ServerOnlineCity.Model
             if (FactionOnlineList == null) FactionOnlineList = new List<FactionOnline>();
             if (StoryEvents == null) StoryEvents = new List<ServerStoryEvent>();
             if (StorytellerKnownTiles == null) StorytellerKnownTiles = new List<int>();
+            if (GuildOrders == null) GuildOrders = new List<GuildOrder>();
+            if (ActiveGlobalEvent == null) ActiveGlobalEvent = new GlobalEvent();
+            if (NextGlobalEventUtc == DateTime.MinValue) NextGlobalEventUtc = DateTime.UtcNow.AddDays(1);
 
             // Преобразования при обновлениях {
 

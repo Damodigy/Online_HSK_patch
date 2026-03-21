@@ -177,6 +177,11 @@ namespace RimWorldOnlineCity
         public bool TerribleFatalError { get; set; }
 
         /// <summary>
+        /// Подтверждение сдачи атакующего через меню хоста.
+        /// </summary>
+        public bool ConfirmedVictoryAttacker { get; set; }
+
+        /// <summary>
         /// Произошла ошибка на сервере. Мы ждем 60 секунд пока сервер не пришлет по системе mail команду. 
         /// Если этого не происходит, то вызывает отключение по неизвестной ошибке. 
         /// Также ожидание нужно, чтобы показать серверу, что ошибка произошла не из-за того что атакуемый отключился
@@ -687,7 +692,7 @@ namespace RimWorldOnlineCity
                             }
 
                             //новые вещи
-                            var newThings = new List<ThingEntry>();
+                            var newThings = new List<ThingTrade>();
                             var newCorpses = new List<AttackCorpse>();
                             foreach (var thing in ToSendThingAdd)
                             {
@@ -1255,7 +1260,24 @@ namespace RimWorldOnlineCity
         }
 
         /// <summary>
-        /// Изменяем скорость пешек от 1 до 450 (см. Pawn.TicksPerMove)
+        /// Изменяем скорость пешек от 1 до 450 (см. Pawn.TicksPerMove).
+        /// Применяется только к пешкам хозяина карты, не к атакующим.
+        /// </summary>
+        public void ControlPawnMoveSpeed(Pawn pawn, ref float ticksPerMove)
+        {
+            if (pawn == null) return;
+            if (pawn.Map == null) return;
+            if (HostPawnMoveSpeed <= 0f) return;
+            if (Math.Abs(HostPawnMoveSpeed - 1f) < 0.001f) return;
+
+            if (AttackingPawns != null && AttackingPawns.Contains(pawn)) return;
+
+            var value = ticksPerMove * HostPawnMoveSpeed;
+            if (value < 1f) value = 1f;
+            else if (value > 450f) value = 450f;
+            ticksPerMove = value;
+        }
+
         /// <summary>
         /// Принудительная остановка режима
         /// </summary>
@@ -1270,10 +1292,11 @@ namespace RimWorldOnlineCity
             GameAttackTrigger_Patch.ForceSpeed = -1f;
         }
 
-        public void Finish()
+        public void Finish(bool victoryAttacker = false)
         {
             Find.TickManager.Pause();
             Clear();
+            _ = victoryAttacker;
 
             GameUtils.ShowDialodOKCancel(
                 "OCity_GameAttack_Host_Test_Attack".Translate(AttackerLogin)

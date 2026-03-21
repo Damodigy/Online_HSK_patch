@@ -1,9 +1,11 @@
-﻿using Model;
+using Model;
 using OCUnion;
 using ServerOnlineCity.Model;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using ServerOnlineCity.Services;
+using Transfer.ModelMails;
 
 namespace ServerOnlineCity.Mechanics
 {
@@ -38,6 +40,67 @@ namespace ServerOnlineCity.Mechanics
             TryResolveFactionConflict(data, now);
             TryEmitDiplomaticEvent(data, now);
             TrySpawnGlobalPoint(data, now);
+            TryNaturalDisaster(data, now);
+
+            TryGlobalEvent(data, now);
+            ExchengeOperator.TryBroadcastHotOrders(data, now);
+
+            MerchantGuild.Tick(data);
+        }
+
+        public static void TryGlobalEvent(BaseContainer data, DateTime now)
+        {
+            if (data == null) return;
+            var evt = data.ActiveGlobalEvent;
+
+            // Если событие истекло
+            if (evt != null && evt.Type != GlobalEventType.None && !evt.IsActive(now))
+            {
+                AppendStoryEvent(data, "OC_GlobalEvent_Ended",
+                    $"Событие {evt.Type} подошло к концу.", 0, "globalevent");
+                Loger.Log($"GlobalEvent expired: {evt.Type}");
+                
+                evt.Type = GlobalEventType.None;
+                data.NextGlobalEventUtc = now.AddDays(Rnd.Next(3, 7)); // Следующее через 3-7 дней
+            }
+
+            // Если пришло время для нового события
+            if ((evt == null || evt.Type == GlobalEventType.None) && now >= data.NextGlobalEventUtc)
+            {
+                if (data.ActiveGlobalEvent == null) data.ActiveGlobalEvent = new GlobalEvent();
+                evt = data.ActiveGlobalEvent;
+
+                var values = new[] { GlobalEventType.TradeWeek, GlobalEventType.Invasion, GlobalEventType.Truce };
+                evt.Type = values[Rnd.Next(values.Length)];
+                evt.StartsAtUtc = now;
+                evt.EndsAtUtc = now.AddHours(48); // Длительность 48 часов
+
+                AppendStoryEvent(data, "OC_GlobalEvent_Started",
+                    $"Началось новое глобальное событие: {evt.Type}.", 0, "globalevent");
+                Loger.Log($"GlobalEvent started: {evt.Type} until {evt.EndsAtUtc:g}");
+
+                // Рассылка писем онлайн-игрокам
+                var onlinePlayers = data.GetPlayersAll
+                    ?.Where(p => p?.Public?.Login != null 
+                        && p.Public.Login != "system" 
+                        && p.Public.LastSaveTime > now.AddMinutes(-30))
+                    .ToList();
+
+                if (onlinePlayers != null)
+                {
+                    foreach (var player in onlinePlayers)
+                    {
+                        var msg = $"Global event started: {evt.Type}. Ends at {evt.EndsAtUtc:g}";
+                        HelperMailMessadge.Send(
+                            data.PlayerSystem
+                            , player
+                            , "OC_GlobalEvent_Started"
+                            , msg
+                            , ModelMailMessadge.MessadgeTypes.GoldenLetter
+                            , 0);
+                    }
+                }
+            }
         }
 
         public static void RegisterKnownTile(BaseContainer data, int tile)
@@ -292,6 +355,13 @@ namespace ServerOnlineCity.Mechanics
             {
                 mineWeight += 6;
                 farmWeight += 6;
+            }
+
+            // Нашествие значительно повышает шанс спавна военных баз
+            if (data.ActiveGlobalEvent?.Type == GlobalEventType.Invasion
+                && data.ActiveGlobalEvent.IsActive(DateTime.UtcNow))
+            {
+                militaryWeight += 50;
             }
 
             var pool = new List<Tuple<StorySpawnKind, int>>()
@@ -849,7 +919,7 @@ namespace ServerOnlineCity.Mechanics
                  {
                      if (string.IsNullOrWhiteSpace(point.StorySeed))
                      {
-                         point.StorySeed = BuildStorySeed(ResolveSpawnKind(point.StoryType), point.Tile, point.FactionDef);
+                         point.StorySeed = BuildStorySeed(ResolveSpawnKind(point.StoryType), point.Tile, point.FactionDef, point.StoryLevel);
                      }
                      point.Name = AttachSeedToName(point.Name, point.StorySeed);
                  }
@@ -927,6 +997,7 @@ namespace ServerOnlineCity.Mechanics
                 point.ExpireAtUtc = DateTime.MinValue;
                 point.StoryLevel = 1;
                 point.StoryNextActionUtc = now.AddMinutes(GetSettlementActionCooldownMinutes());
+                point.StorySeed = BuildStorySeed(StorySpawnKind.Settlement, point.Tile, point.FactionDef, 1);
                 ApplySettlementName(point);
 
                 var kindName = GetTemporaryPointKindLabel(oldStoryType);
@@ -972,15 +1043,17 @@ namespace ServerOnlineCity.Mechanics
                 if (!CanUseStoryKey(data, evolveKey, 180)) continue;
                 point.StoryLevel = Math.Min(maxLevel, level + 1);
                 point.StoryNextActionUtc = now.AddMinutes(GetSettlementActionCooldownMinutes());
+                point.StorySeed = BuildStorySeed(StorySpawnKind.Settlement, point.Tile, point.FactionDef, point.StoryLevel);
                 ApplySettlementName(point);
 
                 var levelLabel = GetSettlementTierLabel(point.StoryLevel).ToLowerInvariant();
+                var leaderText = point.StoryLevel >= 2 ? $" Во главе встал {GenerateLeaderTitle()}." : "";
                 AppendStoryEvent(data
                     , "Сюжет мира"
                     , Flavor(
-                        $"Поселение \"{oldName}\" усилилось. Новый статус: {levelLabel} ({point.Name}).",
-                        $"В \"{oldName}\" завершен этап роста: теперь это {levelLabel} ({point.Name}).",
-                        $"Рост инфраструктуры дал результат: {point.Name} выходит на уровень «{levelLabel}».")
+                        $"Поселение \"{oldName}\" усилилось. Новый статус: {levelLabel} ({point.Name}).{leaderText}",
+                        $"В \"{oldName}\" завершен этап роста: теперь это {levelLabel} ({point.Name}).{leaderText}",
+                        $"Рост инфраструктуры дал результат: {point.Name} выходит на уровень «{levelLabel}».{leaderText}")
                     , point.Tile
                     , "storyteller"
                     , evolveKey
@@ -1169,6 +1242,7 @@ namespace ServerOnlineCity.Mechanics
                 conflictPairKey = BuildFallbackPairKeyByLabels(attackerName, targetName);
             }
             var conflictKey = $"conflict:{conflictPairKey}:{DateTime.UtcNow:yyyyMMdd}";
+            var motive = GetConflictMotive();
 
             if (IsSettlementType(target.StoryType) && Roll(35))
             {
@@ -1180,9 +1254,9 @@ namespace ServerOnlineCity.Mechanics
                 AppendStoryEvent(data
                     , "Сюжет мира"
                     , Flavor(
-                        $"{attackerName} перехватили контроль над точкой фракции {targetName}: {target.Name}.",
-                        $"После штурма силы {attackerName} заняли поселение {target.Name}, ранее принадлежавшее {targetName}.",
-                        $"{target.Name} сменило хозяина: теперь точка под влиянием {attackerName}.")
+                        $"{attackerName} перехватили контроль над точкой фракции {targetName} ({motive}): {target.Name}.",
+                        $"После штурма ({motive}) силы {attackerName} заняли поселение {target.Name}, ранее принадлежавшее {targetName}.",
+                        $"{target.Name} сменило хозяина ({motive}): теперь точка под влиянием {attackerName}.")
                     , target.Tile
                     , "storyteller"
                     , conflictKey);
@@ -1193,9 +1267,9 @@ namespace ServerOnlineCity.Mechanics
                 AppendStoryEvent(data
                     , "Сюжет мира"
                     , Flavor(
-                        $"{attackerName} вытеснили силы фракции {targetName}. Точка \"{target.Name}\" исчезла с карты.",
-                        $"Столкновение {attackerName} и {targetName} завершилось падением точки \"{target.Name}\".",
-                        $"Линия фронта сместилась: \"{target.Name}\" больше не удерживается силами {targetName}.")
+                        $"{attackerName} вытеснили силы фракции {targetName} ({motive}). Точка \"{target.Name}\" исчезла с карты.",
+                        $"Столкновение {attackerName} и {targetName} ({motive}) завершилось падением точки \"{target.Name}\".",
+                        $"Линия фронта сместилась ({motive}): \"{target.Name}\" больше не удерживается силами {targetName}.")
                     , target.Tile
                     , "storyteller"
                     , conflictKey);
@@ -1639,6 +1713,11 @@ namespace ServerOnlineCity.Mechanics
             return ReadSetting(s => s.StorytellerDiplomacyChancePercent, 10, 0, 100);
         }
 
+        private static int GetDisasterChancePercent()
+        {
+            return 3;
+        }
+
         private static StorySpawnKind PickSpawnKind(bool hasPlayerTiles)
         {
             var playerWeight = hasPlayerTiles
@@ -1749,9 +1828,9 @@ namespace ServerOnlineCity.Mechanics
 
         private static string GetSettlementTierLabel(int level)
         {
-            if (level <= 1) return "Поселение";
-            if (level == 2) return "Укрепленное поселение";
-            return "Город";
+            if (level <= 1) return Flavor("Поселение", "Поселок", "Деревня", "Стоянка");
+            if (level == 2) return Flavor("Укрепленное поселение", "Укрепление", "Крепость", "Форт");
+            return Flavor("Город", "Цитадель", "Столица");
         }
 
         private static void ApplySettlementName(WorldObjectOnline point, BaseContainer data = null)
@@ -1940,12 +2019,13 @@ namespace ServerOnlineCity.Mechanics
             return prefix + " " + normalizedCore;
         }
 
-        private static string BuildStorySeed(StorySpawnKind kind, int tile, string factionDef)
+        private static string BuildStorySeed(StorySpawnKind kind, int tile, string factionDef, int settlementLevel = 0)
         {
             var prefix = GetSeedPrefix(kind);
-            var seedSource = $"{prefix}:{tile}:{factionDef ?? string.Empty}:{DateTime.UtcNow.Ticks}:{NextCode()}";
+            var suffix = GetThematicSeedSuffix(kind, settlementLevel);
+            var seedSource = $"{prefix}:{suffix}:{tile}:{factionDef ?? string.Empty}:{DateTime.UtcNow.Ticks}:{NextCode()}";
             var hash = StableSeedHash(seedSource).ToString("X6");
-            return $"{prefix}-{hash}";
+            return $"{prefix}.{suffix}-{hash}";
         }
 
         private static int StableSeedHash(string value)
@@ -1967,17 +2047,117 @@ namespace ServerOnlineCity.Mechanics
         {
             switch (kind)
             {
-                case StorySpawnKind.PlayerFrontierCamp: return "CP";
-                case StorySpawnKind.TradeCamp: return "TC";
-                case StorySpawnKind.Outpost: return "OP";
-                case StorySpawnKind.MilitaryBase: return "MB";
-                case StorySpawnKind.Mine: return "MN";
-                case StorySpawnKind.Farm: return "FM";
-                case StorySpawnKind.IndustrialSite: return "IN";
-                case StorySpawnKind.ResearchHub: return "RS";
-                case StorySpawnKind.LogisticsHub: return "LG";
-                default: return "ST";
+                case StorySpawnKind.PlayerFrontierCamp: return "camp";
+                case StorySpawnKind.TradeCamp: return "market";
+                case StorySpawnKind.Outpost: return "outpost";
+                case StorySpawnKind.MilitaryBase: return "fortress";
+                case StorySpawnKind.Mine: return "mine";
+                case StorySpawnKind.Farm: return "farm";
+                case StorySpawnKind.IndustrialSite: return "factory";
+                case StorySpawnKind.ResearchHub: return "lab";
+                case StorySpawnKind.LogisticsHub: return "depot";
+                default: return "ruins";
             }
+        }
+
+        private static string GetThematicSeedSuffix(StorySpawnKind kind, int settlementLevel)
+        {
+            switch (kind)
+            {
+                case StorySpawnKind.PlayerFrontierCamp:
+                    return Flavor("bivouac", "encampment", "staging_area");
+                case StorySpawnKind.TradeCamp:
+                    return Flavor("bazaar", "caravan_stop", "exchange");
+                case StorySpawnKind.Outpost:
+                    return Flavor("watchtower", "checkpoint", "patrol_base");
+                case StorySpawnKind.MilitaryBase:
+                    return Flavor("bunker", "garrison", "watchtower", "barracks");
+                case StorySpawnKind.Mine:
+                    return Flavor("quarry", "shaft", "excavation", "tunnel");
+                case StorySpawnKind.Farm:
+                    return Flavor("ranch", "greenhouse", "plantation", "field");
+                case StorySpawnKind.IndustrialSite:
+                    return Flavor("foundry", "workshop", "smelter", "assembly");
+                case StorySpawnKind.ResearchHub:
+                    return Flavor("lab", "observatory", "archive", "antenna");
+                case StorySpawnKind.LogisticsHub:
+                    return Flavor("warehouse", "terminal", "junction", "depot");
+                default:
+                    if (settlementLevel >= 3) return Flavor("city", "citadel", "metropolis");
+                    if (settlementLevel == 2) return Flavor("town", "stronghold", "bastion");
+                    return Flavor("hamlet", "village", "outskirts", "settlement");
+            }
+        }
+
+        private static void TryNaturalDisaster(BaseContainer data, DateTime now)
+        {
+            if (data.WorldObjectOnlineList == null || data.WorldObjectOnlineList.Count == 0) return;
+            if (!Roll(GetDisasterChancePercent())) return;
+
+            var candidates = data.WorldObjectOnlineList
+                .Where(p => p != null && p.ServerGenerated && p.Tile > 0)
+                .ToList();
+            if (candidates.Count == 0) return;
+
+            var target = Pick(candidates);
+            var disasterType = Flavor("землетрясение", "пожар", "наводнение", "шторм", "эпидемия", "засуха");
+            var disasterKey = $"disaster:{target.Tile}:{DateTime.UtcNow:yyyyMMdd}";
+            if (!CanUseStoryKey(data, disasterKey, 360)) return;
+
+            if (IsSettlementType(target.StoryType) && GetSettlementLevel(target) > 1)
+            {
+                var oldName = target.Name;
+                var oldLevel = GetSettlementLevel(target);
+                target.StoryLevel = Math.Max(1, oldLevel - 1);
+                target.StoryNextActionUtc = now.AddMinutes(GetSettlementActionCooldownMinutes());
+                target.StorySeed = BuildStorySeed(StorySpawnKind.Settlement, target.Tile, target.FactionDef, target.StoryLevel);
+                ApplySettlementName(target);
+                AppendStoryEvent(data
+                    , "Стихийное бедствие"
+                    , Flavor(
+                        $"Катастрофа ({disasterType}) обрушилась на \"{oldName}\". Поселение потеряло часть инфраструктуры и откатилось в развитии.",
+                        $"{disasterType.Substring(0, 1).ToUpperInvariant() + disasterType.Substring(1)} нанес(ло) серьезный урон \"{oldName}\". Уровень снижен до {GetSettlementTierLabel(target.StoryLevel).ToLowerInvariant()}.",
+                        $"Стихия не пощадила \"{oldName}\": после {disasterType} поселение вынуждено восстанавливаться.")
+                    , target.Tile
+                    , "disaster"
+                    , disasterKey
+                    , 360);
+            }
+            else
+            {
+                data.WorldObjectOnlineList.Remove(target);
+                var kindLabel = GetPointKindLabel(target.StoryType).ToLowerInvariant();
+                AppendStoryEvent(data
+                    , "Стихийное бедствие"
+                    , Flavor(
+                        $"Разрушительное {disasterType} уничтожило {kindLabel} \"{target.Name}\". Точка исчезла с карты.",
+                        $"{kindLabel.Substring(0, 1).ToUpperInvariant() + kindLabel.Substring(1)} \"{target.Name}\" не пережил(а) {disasterType}. Выжившие покинули территорию.",
+                        $"После {disasterType} от {kindLabel} \"{target.Name}\" остались лишь руины.")
+                    , target.Tile
+                    , "disaster"
+                    , disasterKey
+                    , 360);
+            }
+        }
+
+        private static string GetConflictMotive()
+        {
+            return Flavor(
+                "за контроль над ресурсами",
+                "на почве старых обид",
+                "в борьбе за торговые маршруты",
+                "после провокации на границе",
+                "из-за территориального спора",
+                "за доступ к водным источникам",
+                "после нарушения перемирия",
+                "из-за похищения караванов");
+        }
+
+        private static string GenerateLeaderTitle()
+        {
+            var titles = new[] { "Старейшина", "Комендант", "Магистр", "Атаман", "Вождь", "Управитель", "Наместник", "Предводитель" };
+            var names = new[] { "Рик", "Ива", "Кайе", "Торн", "Зара", "Хёгг", "Мира", "Вейн", "Нора", "Дарг", "Эльза", "Кром", "Лана", "Рейн", "Оска", "Фрида" };
+            return titles[NextInt(titles.Length)] + " " + names[NextInt(names.Length)];
         }
 
         private static string AttachSeedToName(string name, string seed)

@@ -579,6 +579,20 @@ namespace RimWorldOnlineCity
             }
 
             //После передачи сохраняем, чтобы нельзя было обузить, после чего передаем вещи
+            var failAction = finishBad ?? (() =>
+            {
+                var err = SessionClient.Get?.ErrorMessage;
+                if (string.IsNullOrWhiteSpace(err)) err = "Failed to send items";
+                ModBaseData.RunMainThread(() =>
+                {
+                    GameUtils.ShowDialodOKCancel(
+                        "OCity_Caravan_Trade".Translate().ToString(),
+                        err,
+                        () => { },
+                        null);
+                });
+            });
+
             SessionClientController.SaveGameNowSingleAndCommandSafely(
                 (connect) =>
                 {
@@ -589,7 +603,7 @@ namespace RimWorldOnlineCity
                         , destination.Tile);
                 },
                 finishGood,
-                finishBad); //если не удалось отправить письмо, то жопа так как сейв уже прошел
+                failAction); //если не удалось отправить письмо, показываем причину
         }
         public static void SendThingsWithDestroy(Dictionary<Thing, int> select
             , Caravan caravan //отправить null, если отправка с карты, а не с каравана

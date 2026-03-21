@@ -165,6 +165,32 @@ namespace ServerOnlineCity.Model
 
         public int AttacksInitiatorCount;
 
+        /// <summary>
+        /// Репутация в мире. Растёт от торговли (+2 за сделку), падает от атак (-5).
+        /// Диапазон: -200..1000.
+        /// </summary>
+        public int WorldReputation;
+
+        public void AddReputation(int amount)
+        {
+            WorldReputation = Math.Min(1000, WorldReputation + amount);
+        }
+
+        public void LoseReputation(int amount)
+        {
+            WorldReputation = Math.Max(-200, WorldReputation - amount);
+        }
+
+        /// <summary>
+        /// Скидка к комиссии Гильдии в процентных пунктах (0..5).
+        /// Каждые 200 репутации = 1% скидки.
+        /// </summary>
+        public int GetReputationFeeDiscount()
+        {
+            if (WorldReputation <= 0) return 0;
+            return Math.Min(5, WorldReputation / 200);
+        }
+
         public float StartMarketValue;
         public float StartMarketValuePawn;
 
