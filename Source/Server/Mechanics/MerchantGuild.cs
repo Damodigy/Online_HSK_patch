@@ -251,7 +251,7 @@ namespace ServerOnlineCity.Mechanics
                 .Where(p => p?.Public?.Login != null
                     && p.Public.Login != order.OwnerLogin
                     && p.Public.Login != "system"
-                    && p.LastSaveReceivedUtc > now.AddMinutes(-30))
+                    && p.Public.LastSaveTime > now.AddMinutes(-30))
                 .ToList();
 
             if (onlinePlayers == null || onlinePlayers.Count == 0) return;
